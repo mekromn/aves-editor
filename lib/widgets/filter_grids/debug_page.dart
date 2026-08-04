@@ -1,7 +1,7 @@
 import 'package:aves/model/filters/covered/stored_album.dart';
 import 'package:aves/model/filters/filters.dart';
 import 'package:aves/services/common/services.dart';
-import 'package:aves/services/storage_service.dart';
+import 'package:aves/services/storage_permission_service.dart';
 import 'package:aves/widgets/viewer/info/common.dart';
 import 'package:flutter/material.dart';
 
@@ -28,7 +28,7 @@ class _FilterDebugPageState extends State<FilterDebugPage> {
     super.initState();
     final _filter = filter;
     if (_filter is StoredAlbumFilter) {
-      _storageApiLoader = storageService.getStorageAccess({_filter.album}).then((v) {
+      _storageApiLoader = storagePermissionService.getStorageAccess({_filter.album}).then((v) {
         return v.entries.firstOrNull?.value;
       });
     }

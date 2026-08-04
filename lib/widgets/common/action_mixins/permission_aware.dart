@@ -17,11 +17,11 @@ mixin PermissionAwareMixin {
   }
 
   Future<bool> checkStoragePermissionForAlbums(BuildContext context, Set<String> storageDirs, {Set<AvesEntry>? entries}) async {
-    final restrictedVolumes = await storageService.getSafRestrictedVolumes();
-    final restrictedDirsLowerCase = await storageService.getSafRestrictedDirectoriesLowerCase();
+    final restrictedVolumes = await storagePermissionService.getSafRestrictedVolumes();
+    final restrictedDirsLowerCase = await storagePermissionService.getSafRestrictedDirectoriesLowerCase();
     final insertion = entries == null;
     while (true) {
-      final inaccessibleDirs = await storageService.getInaccessibleDirectories(storageDirs);
+      final inaccessibleDirs = await storagePermissionService.getInaccessibleDirectories(storageDirs);
 
       final restrictedInaccessibleDirsLowerCase = inaccessibleDirs
           .map(
@@ -32,7 +32,7 @@ mixin PermissionAwareMixin {
           .where(restrictedDirsLowerCase.contains)
           .toSet();
       if (restrictedVolumes.isNotEmpty || restrictedInaccessibleDirsLowerCase.isNotEmpty) {
-        if (entries != null && await storageService.canRequestMediaStoreBulkAccess()) {
+        if (entries != null && await storagePermissionService.canRequestMediaStoreBulkAccess()) {
           // request media file access for items in restricted directories
           final uris = <String>[], mimeTypes = <String>[];
           entries
@@ -64,7 +64,7 @@ mixin PermissionAwareMixin {
           if (uris.isNotEmpty) {
             var granted = false;
             try {
-              granted = await storageService.requestMediaStoreFileAccess(uris, mimeTypes);
+              granted = await storagePermissionService.requestMediaStoreFileAccess(uris, mimeTypes);
             } on TooManyItemsException catch (_) {
               await showWarningDialog(
                 context: context,
@@ -73,7 +73,7 @@ mixin PermissionAwareMixin {
             }
             if (!granted) return false;
           }
-        } else if (insertion && await storageService.canInsertByMediaStore(restrictedInaccessibleDirsLowerCase)) {
+        } else if (insertion && await storagePermissionService.canInsertByMediaStore(restrictedInaccessibleDirsLowerCase)) {
           // insertion in restricted directories
         } else {
           // cannot proceed further
@@ -101,7 +101,7 @@ mixin PermissionAwareMixin {
 
       if (!await checkSystemFilePickerEnabled(context)) return false;
 
-      final granted = await storageService.requestSafMediaDirectoryAccess(dir.dirPath);
+      final granted = await storagePermissionService.requestSafMediaDirectoryAccess(dir.dirPath);
       if (!granted) {
         // abort if the user denies access from the native dialog
         return false;

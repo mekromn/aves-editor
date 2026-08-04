@@ -473,7 +473,7 @@ class AlbumChipSetActionDelegate extends ChipSetActionDelegate<AlbumBaseFilter> 
 
         // check whether renaming is possible given OS restrictions,
         // before asking to input a new name
-        final restrictedDirsLowerCase = await storageService.getSafRestrictedDirectoriesLowerCase();
+        final restrictedDirsLowerCase = await storagePermissionService.getSafRestrictedDirectoriesLowerCase();
         if (restrictedDirsLowerCase.contains(dir.copyWith(relativeDir: dir.relativeDir.toLowerCase()))) {
           await showRestrictedDirectoryDialog(context, dir);
           return;

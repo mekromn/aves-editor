@@ -2,7 +2,6 @@ package deckers.thibault.aves.model.provider
 
 import android.app.Activity
 import android.content.Context
-import android.content.ContextWrapper
 import android.net.Uri
 import android.util.Log
 import android.webkit.MimeTypeMap
@@ -76,7 +75,7 @@ internal class FileImageProvider : ImageProvider() {
         }
     }
 
-    override fun delete(contextWrapper: ContextWrapper, uri: Uri, path: String?, mimeType: String) {
+    override fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
         path ?: throw Exception("failed to delete file because path is null")
 
         val file = File(path)

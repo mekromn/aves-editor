@@ -7,7 +7,6 @@ import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
-import android.content.ContextWrapper
 import android.graphics.BitmapFactory
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -23,17 +22,19 @@ import deckers.thibault.aves.model.EntryFields
 import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
+import deckers.thibault.aves.storage.FilePermissions
+import deckers.thibault.aves.storage.MediaStorePermissions
+import deckers.thibault.aves.storage.PathSegments
+import deckers.thibault.aves.storage.SafPermissions
+import deckers.thibault.aves.storage.StorageUtils
+import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
+import deckers.thibault.aves.storage.StorageUtils.removeTrailingSeparator
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
 import deckers.thibault.aves.utils.MimeTypes.extensionFor
 import deckers.thibault.aves.utils.MimeTypes.isHeic
 import deckers.thibault.aves.utils.MimeTypes.isImage
 import deckers.thibault.aves.utils.MimeTypes.isVideo
-import deckers.thibault.aves.utils.PermissionManager
-import deckers.thibault.aves.utils.StorageUtils
-import deckers.thibault.aves.utils.StorageUtils.PathSegments
-import deckers.thibault.aves.utils.StorageUtils.ensureTrailingSeparator
-import deckers.thibault.aves.utils.StorageUtils.removeTrailingSeparator
 import deckers.thibault.aves.utils.UriUtils.tryParseId
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -351,91 +352,80 @@ class MediaStoreImageProvider : ImageProvider() {
 
     private fun needSize(mimeType: String) = MimeTypes.SVG != mimeType
 
-    // `uri` is a media URI, not a document URI
-    override fun delete(contextWrapper: ContextWrapper, uri: Uri, path: String?, mimeType: String) {
-        path ?: throw Exception("failed to delete file because path is null")
-
-        // the following situations are possible:
-        // - there is an entry in the Media Store and there is a file on storage
-        // - there is an entry in the Media Store but there is no longer a file on storage
-        // - there is no entry in the Media Store but there is a file on storage
-        val file = File(path)
-        val fileExists = file.exists()
-
-        if (fileExists) {
-            if (StorageUtils.canEditByFile(contextWrapper, path)) {
-                if (hasEntry(contextWrapper, uri)) {
-                    Log.d(LOG_TAG, "delete [permission:file, file exists, content exists] content at uri=$uri path=$path")
-                    contextWrapper.contentResolver.delete(uri, null, null)
-                }
-                // in theory, deleting via content resolver should remove the file on storage
-                // in practice, the file may still be there afterwards
-                if (file.exists()) {
-                    Log.d(LOG_TAG, "delete [permission:file, file exists after content delete] file at uri=$uri path=$path")
-                    if (file.delete()) {
-                        // in theory, scanning an obsolete path should remove the entry from the Media Store
-                        // in practice, the entry may still be there afterwards
-                        scanObsoletePath(contextWrapper, uri, path, mimeType)
-                        return
-                    }
-                } else {
-                    return
-                }
-            } else if (!isMediaUriPermissionGranted(contextWrapper, uri, mimeType)
-                && StorageUtils.requireAccessPermission(contextWrapper, path)
-            ) {
-                // the delete request may yield a `RecoverableSecurityException` when using scoped storage,
-                // even if we have permissions on the tree document via SAF
-                if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q && hasEntry(contextWrapper, uri)) {
-                    Log.d(LOG_TAG, "delete [permission:doc, file exists, content exists] content at uri=$uri path=$path")
-                    contextWrapper.contentResolver.delete(uri, null, null)
-                }
-
-                // in theory, deleting via content resolver should remove the file on storage
-                // in practice, the file may still be there afterwards
-                if (file.exists()) {
-                    Log.d(LOG_TAG, "delete [permission:doc, file exists after content delete] document at uri=$uri path=$path")
-                    val df = StorageUtils.getDocumentFile(contextWrapper, path, uri)
-
-                    if (df != null && df.delete()) {
-                        scanObsoletePath(contextWrapper, uri, path, mimeType)
-                        return
-                    }
-                    throw Exception("failed to delete document with df=$df")
-                } else {
-                    return
-                }
-            }
-        } else if (uri.scheme?.lowercase(Locale.ROOT) == ContentResolver.SCHEME_FILE) {
-            val uriFilePath = File(uri.path!!).path
-            // URI and path both point to the same non-existent path
-            if (uriFilePath == path) return
+    // returns whether file was successfully deleted
+    private fun deleteSingleByFile(context: Context, uri: Uri, path: String, mimeType: String): Boolean {
+        if (hasEntry(context, uri)) {
+            Log.d(LOG_TAG, "delete [permission:file, file exists, content exists] content at uri=$uri path=$path")
+            context.contentResolver.delete(uri, null, null)
         }
 
-        try {
-            Log.d(LOG_TAG, "delete [file exists=$fileExists] content at uri=$uri path=$path")
-            if (contextWrapper.contentResolver.delete(uri, null, null) > 0) return
+        // in theory, deleting via content resolver should remove the file on storage
+        // in practice, the file may still be there afterward
+        val file = File(path)
+        if (!file.exists()) return true
 
-            if (hasEntry(contextWrapper, uri) || file.exists()) {
+        Log.d(LOG_TAG, "delete [permission:file, file exists after content delete] file at uri=$uri path=$path")
+        if (file.delete()) {
+            // in theory, scanning an obsolete path should remove the entry from the Media Store
+            // in practice, the entry may still be there afterward
+            scanObsoletePath(context, uri, path, mimeType)
+            return true
+        }
+
+        return false
+    }
+
+    fun deleteSingleByTreeDoc(context: Context, uri: Uri, path: String, mimeType: String) {
+        // the delete request may yield a `RecoverableSecurityException` when using scoped storage,
+        // even if we have permissions on the tree document via SAF
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q && hasEntry(context, uri)) {
+            Log.d(LOG_TAG, "delete [permission:doc, file exists, content exists] content at uri=$uri path=$path")
+            context.contentResolver.delete(uri, null, null)
+        }
+
+        // in theory, deleting via content resolver should remove the file on storage
+        // in practice, the file may still be there afterward
+        val file = File(path)
+        if (!file.exists()) return
+
+        Log.d(LOG_TAG, "delete [permission:doc, file exists after content delete] document at uri=$uri path=$path")
+        val df = StorageUtils.getDocumentFile(context, path, uri)
+
+        if (df != null && df.delete()) {
+            scanObsoletePath(context, uri, path, mimeType)
+            return
+        }
+
+        throw Exception("failed to delete document with df=$df")
+    }
+
+    fun deleteSingleByMediaStore(context: Context, uri: Uri, path: String, mimeType: String) {
+        val file = File(path)
+
+        try {
+            Log.d(LOG_TAG, "delete [file exists=${file.exists()}] content at uri=$uri path=$path")
+            if (context.contentResolver.delete(uri, null, null) > 0) return
+
+            if (hasEntry(context, uri) || file.exists()) {
                 throw Exception("failed to delete row from content provider")
             }
         } catch (securityException: SecurityException) {
             // even if the app has access permission granted on the containing directory,
             // the delete request may yield a `RecoverableSecurityException` on API >=29
             // when the underlying file no longer exists and this is an orphaned entry in the Media Store
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && contextWrapper is Activity) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && context is Activity) {
                 Log.w(LOG_TAG, "caught a security exception when attempting to delete uri=$uri", securityException)
                 val rse = securityException as? RecoverableSecurityException ?: throw securityException
                 val intentSender = rse.userAction.actionIntent.intentSender
 
                 // request user permission for this item
                 MainActivity.pendingScopedStoragePermissionCompleter = CompletableFuture<Boolean>()
-                contextWrapper.startIntentSenderForResult(intentSender, DELETE_SINGLE_PERMISSION_REQUEST, null, 0, 0, 0, null)
+                context.startIntentSenderForResult(intentSender, DELETE_SINGLE_PERMISSION_REQUEST, null, 0, 0, 0, null)
                 val granted = MainActivity.pendingScopedStoragePermissionCompleter!!.join()
 
                 MainActivity.pendingScopedStoragePermissionCompleter = null
                 if (granted) {
-                    delete(contextWrapper, uri, path, mimeType)
+                    delete(context, uri, path, mimeType)
                 } else {
                     throw Exception("failed to get delete permission")
                 }
@@ -443,6 +433,32 @@ class MediaStoreImageProvider : ImageProvider() {
                 throw securityException
             }
         }
+    }
+
+    // `uri` is a media URI, not a document URI
+    override fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
+        path ?: throw Exception("failed to delete file because path is null")
+
+        // the following situations are possible:
+        // - there is an entry in the Media Store and there is a file on storage
+        // - there is an entry in the Media Store but there is no longer a file on storage
+        // - there is no entry in the Media Store but there is a file on storage
+        val file = File(path)
+
+        if (file.exists()) {
+            if (FilePermissions.canEdit(context, path)) {
+                val deleted = deleteSingleByFile(context = context, uri = uri, path = path, mimeType = mimeType)
+                if (deleted) return
+            } else if (!MediaStorePermissions.canEdit(context, uri, mimeType)) {
+                deleteSingleByTreeDoc(context = context, uri = uri, path = path, mimeType = mimeType)
+            }
+        } else if (uri.scheme?.lowercase(Locale.ROOT) == ContentResolver.SCHEME_FILE) {
+            val uriFilePath = File(uri.path!!).path
+            // URI and path both point to the same non-existent path
+            if (uriFilePath == path) return
+        }
+
+        deleteSingleByMediaStore(context = context, uri = uri, path = path, mimeType = mimeType)
     }
 
     override suspend fun moveMultiple(
@@ -672,7 +688,7 @@ class MediaStoreImageProvider : ImageProvider() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && StorageUtils.isInDownloadPath(context, targetDir)) {
             return true
         }
-        if (PermissionManager.isPathOnRestrictedVolume(context, targetDir)) {
+        if (SafPermissions.isPathOnRestrictedVolume(context, targetDir)) {
             return true
         }
         return false
@@ -779,8 +795,8 @@ class MediaStoreImageProvider : ImageProvider() {
         oldPath: String,
         newFile: File,
     ): FieldMap = when {
-        StorageUtils.canEditByFile(activity, oldPath) -> renameSingleByFile(activity, mimeType, oldMediaUri, oldPath, newFile)
-        isMediaUriPermissionGranted(activity, oldMediaUri, mimeType) -> renameSingleByMediaStore(activity, mimeType, oldMediaUri, newFile)
+        FilePermissions.canEdit(activity, oldPath) -> renameSingleByFile(activity, mimeType, oldMediaUri, oldPath, newFile)
+        MediaStorePermissions.canEdit(activity, oldMediaUri, mimeType) -> renameSingleByMediaStore(activity, mimeType, oldMediaUri, newFile)
         else -> renameSingleByTreeDoc(activity, mimeType, oldMediaUri, oldPath, newFile)
     }
 

@@ -10,9 +10,9 @@ import deckers.thibault.aves.metadata.metadataextractor.Helper
 import deckers.thibault.aves.model.EntryFields
 import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.SourceEntry
+import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
-import deckers.thibault.aves.utils.StorageUtils
 
 open class UnknownContentProvider : ImageProvider() {
     open val reliableProviderMimeType: Boolean

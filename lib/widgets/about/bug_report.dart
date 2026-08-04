@@ -153,7 +153,7 @@ class _BugReportContentState extends State<BugReportContent> with FeedbackMixin 
 
     final connections = await Connectivity().checkConnectivity();
     final storageVolumes = await storageService.getStorageVolumes();
-    final storageGrants = await storageService.getGrantedDirectories();
+    final storageGrants = await storageService.getSafGrantedDirectories();
 
     final source = context.read<CollectionSource>();
     final entryCount = source.allEntries.length;

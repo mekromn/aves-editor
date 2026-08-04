@@ -3,12 +3,9 @@ package deckers.thibault.aves.model.provider
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
-import android.os.Binder
 import android.os.Build
 import android.util.Log
 import androidx.core.net.toUri
@@ -40,6 +37,8 @@ import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictResolution
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
+import deckers.thibault.aves.storage.MediaStorePermissions
+import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.BitmapUtils
 import deckers.thibault.aves.utils.BmpWriter
 import deckers.thibault.aves.utils.FileUtils.getFileSize
@@ -54,7 +53,6 @@ import deckers.thibault.aves.utils.MimeTypes.canReadWithExifInterface
 import deckers.thibault.aves.utils.MimeTypes.canRemoveMetadata
 import deckers.thibault.aves.utils.MimeTypes.extensionFor
 import deckers.thibault.aves.utils.MimeTypes.isVideo
-import deckers.thibault.aves.utils.StorageUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -102,7 +100,7 @@ abstract class ImageProvider {
         }
     }
 
-    open fun delete(contextWrapper: ContextWrapper, uri: Uri, path: String?, mimeType: String) {
+    open fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
         throw UnsupportedOperationException("`delete` is not supported by this image provider")
     }
 
@@ -1499,7 +1497,7 @@ abstract class ImageProvider {
     ): OutputStream {
         // truncate is necessary when overwriting a longer file
         val mode = "wt"
-        return if (isMediaUriPermissionGranted(context, uri, mimeType)) {
+        return if (MediaStorePermissions.canEdit(context, uri, mimeType)) {
             StorageUtils.openOutputStream(context, mimeType, uri, mode) ?: throw Exception("failed to open output stream for uri=$uri")
         } else {
             val documentUri = StorageUtils.getDocumentFile(context, path, uri)?.uri ?: throw Exception("failed to get document file for path=$path, uri=$uri")
@@ -1524,19 +1522,6 @@ abstract class ImageProvider {
 
         // used when deleting instead of moving to bin because the target file no longer exists
         val deletedFieldMap: HashMap<String, Any?> = hashMapOf("deleted" to true)
-
-        fun isMediaUriPermissionGranted(context: Context, uri: Uri, mimeType: String): Boolean {
-            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val safeUri = StorageUtils.getMediaStoreScopedStorageSafeUri(uri, mimeType)
-
-                val pid = Binder.getCallingPid()
-                val uid = Binder.getCallingUid()
-                val flags = Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                context.checkUriPermission(safeUri, pid, uid, flags) == PackageManager.PERMISSION_GRANTED
-            } else {
-                false
-            }
-        }
 
         fun getTimeZoneString(timeZone: TimeZone, dateTimeMillis: Long): String {
             val offset = timeZone.getOffset(dateTimeMillis)

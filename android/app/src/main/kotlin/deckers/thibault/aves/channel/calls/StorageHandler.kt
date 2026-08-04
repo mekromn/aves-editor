@@ -5,10 +5,13 @@ import android.os.Build
 import android.os.storage.StorageManager
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safe
 import deckers.thibault.aves.model.FieldMap
+import deckers.thibault.aves.storage.MediaStorePermissions
+import deckers.thibault.aves.storage.PathSegments
+import deckers.thibault.aves.storage.PermissionManager
+import deckers.thibault.aves.storage.SafPermissions
+import deckers.thibault.aves.storage.StorageUtils
+import deckers.thibault.aves.storage.StorageUtils.getVolumePaths
 import deckers.thibault.aves.utils.FileUtils.getFolderSize
-import deckers.thibault.aves.utils.PermissionManager
-import deckers.thibault.aves.utils.StorageUtils
-import deckers.thibault.aves.utils.StorageUtils.getVolumePaths
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
@@ -31,16 +34,18 @@ class StorageHandler(private val context: Context) : MethodCallHandler {
             "getUntrackedVaultPaths" -> ioScope.launch { safe(call, result, ::getUntrackedVaultPaths) }
             "getVaultRoot" -> ioScope.launch { safe(call, result, ::getVaultRoot) }
             "getFreeSpace" -> ioScope.launch { safe(call, result, ::getFreeSpace) }
-            "getGrantedDirectories" -> ioScope.launch { safe(call, result, ::getGrantedDirectories) }
-            "getInaccessibleDirectories" -> ioScope.launch { safe(call, result, ::getInaccessibleDirectories) }
-            "getRestrictedDirectories" -> ioScope.launch { safe(call, result, ::getRestrictedDirectories) }
-            "getRestrictedVolumes" -> ioScope.launch { safe(call, result, ::getRestrictedVolumes) }
-            "revokeDirectoryAccess" -> safe(call, result, ::revokeDirectoryAccess)
             "deleteEmptyDirectories" -> ioScope.launch { safe(call, result, ::deleteEmptyDirectories) }
             "deleteTempDirectory" -> ioScope.launch { safe(call, result, ::deleteTempDirectory) }
             "deleteExternalCache" -> ioScope.launch { safe(call, result, ::deleteExternalCache) }
-            "canRequestMediaFileBulkAccess" -> safe(call, result, ::canRequestMediaFileBulkAccess)
-            "canInsertMedia" -> safe(call, result, ::canInsertMedia)
+
+            // permissions
+            "getSafGrantedDirectories" -> ioScope.launch { safe(call, result, ::getSafGrantedDirectories) }
+            "getInaccessibleDirectories" -> ioScope.launch { safe(call, result, ::getInaccessibleDirectories) }
+            "getSafRestrictedDirectories" -> ioScope.launch { safe(call, result, ::getSafRestrictedDirectories) }
+            "getSafRestrictedVolumes" -> ioScope.launch { safe(call, result, ::getSafRestrictedVolumes) }
+            "revokeSafDirectoryAccess" -> safe(call, result, ::revokeSafDirectoryAccess)
+            "canRequestMediaStoreBulkAccess" -> safe(call, result, ::canRequestMediaStoreBulkAccess)
+            "canInsertByMediaStore" -> safe(call, result, ::canInsertByMediaStore)
             else -> result.notImplemented()
         }
     }
@@ -183,39 +188,6 @@ class StorageHandler(private val context: Context) : MethodCallHandler {
         }
     }
 
-    private fun getGrantedDirectories(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
-        result.success(ArrayList(PermissionManager.getGrantedDirs(context)))
-    }
-
-    private fun getInaccessibleDirectories(call: MethodCall, result: MethodChannel.Result) {
-        val dirPaths = call.argument<List<String>>("dirPaths")
-        if (dirPaths == null) {
-            result.error("getInaccessibleDirectories-args", "missing arguments", null)
-            return
-        }
-
-        result.success(PermissionManager.getInaccessibleDirectories(context, dirPaths))
-    }
-
-    private fun getRestrictedDirectories(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
-        result.success(PermissionManager.getRestrictedDirectories(context))
-    }
-
-    private fun getRestrictedVolumes(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
-        result.success(PermissionManager.getRestrictedVolumes(context).toList())
-    }
-
-    private fun revokeDirectoryAccess(call: MethodCall, result: MethodChannel.Result) {
-        val path = call.argument<String>("path")
-        if (path == null) {
-            result.error("revokeDirectoryAccess-args", "missing arguments", null)
-            return
-        }
-
-        val success = PermissionManager.revokeDirectoryAccess(context, path)
-        result.success(success)
-    }
-
     private fun deleteEmptyDirectories(call: MethodCall, result: MethodChannel.Result) {
         val dirPaths = call.argument<List<String>>("dirPaths")
         if (dirPaths == null) {
@@ -246,18 +218,55 @@ class StorageHandler(private val context: Context) : MethodCallHandler {
         result.success(true)
     }
 
-    private fun canRequestMediaFileBulkAccess(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
-        result.success(Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+    private fun getSafGrantedDirectories(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
+        val dirPaths = SafPermissions.getGrantedDirectories(context)
+        result.success(dirPaths.toList())
     }
 
-    private fun canInsertMedia(call: MethodCall, result: MethodChannel.Result) {
-        val directories = call.argument<List<FieldMap>>("directories")
-        if (directories == null) {
-            result.error("canInsertMedia-args", "missing arguments", null)
+    private fun getInaccessibleDirectories(call: MethodCall, result: MethodChannel.Result) {
+        val dirPaths = call.argument<List<String>>("dirPaths")
+        if (dirPaths == null) {
+            result.error("getInaccessibleDirectories-args", "missing arguments", null)
             return
         }
 
-        result.success(PermissionManager.canInsertByMediaStore(directories))
+        val pathSegments = PermissionManager.getInaccessibleDirectories(context, dirPaths)
+        result.success(pathSegments.map(PathSegments::toMap).toList())
+    }
+
+    private fun getSafRestrictedDirectories(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
+        val pathSegments = SafPermissions.getRestrictedDirectories(context)
+        result.success(pathSegments.map(PathSegments::toMap).toList())
+    }
+
+    private fun getSafRestrictedVolumes(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
+        val paths = SafPermissions.getRestrictedVolumes(context)
+        result.success(paths.toList())
+    }
+
+    private fun revokeSafDirectoryAccess(call: MethodCall, result: MethodChannel.Result) {
+        val path = call.argument<String>("path")
+        if (path == null) {
+            result.error("revokeSafDirectoryAccess-args", "missing arguments", null)
+            return
+        }
+
+        val success = SafPermissions.revokeDirectoryAccess(context, path)
+        result.success(success)
+    }
+
+    private fun canRequestMediaStoreBulkAccess(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
+        result.success(MediaStorePermissions.canRequestBulkAccess())
+    }
+
+    private fun canInsertByMediaStore(call: MethodCall, result: MethodChannel.Result) {
+        val directories = call.argument<List<FieldMap>>("directories")
+        if (directories == null) {
+            result.error("canInsertByMediaStore-args", "missing arguments", null)
+            return
+        }
+
+        result.success(MediaStorePermissions.canInsert(directories))
     }
 
     companion object {

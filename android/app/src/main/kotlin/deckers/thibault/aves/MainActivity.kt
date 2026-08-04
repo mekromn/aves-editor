@@ -1,6 +1,5 @@
 package deckers.thibault.aves
 
-import android.annotation.SuppressLint
 import android.app.KeyguardManager
 import android.app.SearchManager
 import android.appwidget.AppWidgetManager
@@ -59,6 +58,7 @@ import deckers.thibault.aves.channel.streams.platformtodart.MediaStoreChangeStre
 import deckers.thibault.aves.channel.streams.platformtodart.SettingsChangeStreamHandler
 import deckers.thibault.aves.channel.streams.platformtodart.WindowChangeStreamHandler
 import deckers.thibault.aves.model.FieldMap
+import deckers.thibault.aves.storage.SafPermissions
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.anyCauseIs
 import deckers.thibault.aves.utils.getParcelableExtraCompat
@@ -336,19 +336,7 @@ open class MainActivity : FlutterFragmentActivity() {
             return
         }
 
-        val canPersist = (intent.flags and Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION) != 0
-        @SuppressLint("WrongConstant")
-        if (canPersist) {
-            // save access permissions across reboots
-            val takeFlags = (intent.flags
-                    and (Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    or Intent.FLAG_GRANT_WRITE_URI_PERMISSION))
-            try {
-                contentResolver.takePersistableUriPermission(treeUri, takeFlags)
-            } catch (e: SecurityException) {
-                Log.w(LOG_TAG, "failed to take persistable URI permission for uri=$treeUri", e)
-            }
-        }
+        SafPermissions.takePersistableUriPermission(this, intent.flags, treeUri)
 
         // resume pending action
         onStorageAccessResult(requestCode, treeUri)

@@ -24,17 +24,17 @@ abstract class StorageService {
 
   Future<int?> getFreeSpace(StorageVolume volume);
 
-  Future<List<String>> getGrantedDirectories();
+  Future<List<String>> getSafGrantedDirectories();
 
   Future<Set<VolumeRelativeDirectory>> getInaccessibleDirectories(Iterable<String> dirPaths);
 
   // returns directories with restricted access,
   // with the relative part in lowercase, for case-insensitive comparison
-  Future<Set<VolumeRelativeDirectory>> getRestrictedDirectoriesLowerCase();
+  Future<Set<VolumeRelativeDirectory>> getSafRestrictedDirectoriesLowerCase();
 
-  Future<Set<String>> getRestrictedVolumes();
+  Future<Set<String>> getSafRestrictedVolumes();
 
-  Future<void> revokeDirectoryAccess(String path);
+  Future<void> revokeSafDirectoryAccess(String path);
 
   // returns number of deleted directories
   Future<int> deleteEmptyRegularDirectories(Set<String> dirPaths);
@@ -44,17 +44,17 @@ abstract class StorageService {
   Future<bool> deleteExternalCache();
 
   // returns whether user granted access to a directory of his choosing
-  Future<bool> requestDirectoryAccess(String path);
+  Future<bool> requestSafMediaDirectoryAccess(String path);
 
   // returns a directory to which user granted access
-  Future<String?> requestAnyDirectoryAccess();
+  Future<String?> requestSafAnyDirectoryAccess();
 
-  Future<bool> canRequestMediaFileBulkAccess();
+  Future<bool> canRequestMediaStoreBulkAccess();
 
-  Future<bool> canInsertMedia(Set<VolumeRelativeDirectory> directories);
+  Future<bool> canInsertByMediaStore(Set<VolumeRelativeDirectory> directories);
 
   // returns whether user granted access to URIs
-  Future<bool> requestMediaFileAccess(List<String> uris, List<String> mimeTypes);
+  Future<bool> requestMediaStoreFileAccess(List<String> uris, List<String> mimeTypes);
 
   // save provided content to a user selected file
   // skip user interaction if `dirPath` is provided
@@ -170,9 +170,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<List<String>> getGrantedDirectories() async {
+  Future<List<String>> getSafGrantedDirectories() async {
     try {
-      final result = await _platform.invokeMethod('getGrantedDirectories');
+      final result = await _platform.invokeMethod('getSafGrantedDirectories');
       return (result as List).cast<String>();
     } on PlatformException catch (e, stack) {
       await reportService.recordError(e, stack);
@@ -196,9 +196,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<Set<VolumeRelativeDirectory>> getRestrictedDirectoriesLowerCase() async {
+  Future<Set<VolumeRelativeDirectory>> getSafRestrictedDirectoriesLowerCase() async {
     try {
-      final result = await _platform.invokeMethod('getRestrictedDirectories');
+      final result = await _platform.invokeMethod('getSafRestrictedDirectories');
       if (result != null) {
         return (result as List)
             .cast<Map>()
@@ -217,9 +217,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<Set<String>> getRestrictedVolumes() async {
+  Future<Set<String>> getSafRestrictedVolumes() async {
     try {
-      final result = await _platform.invokeMethod('getRestrictedVolumes');
+      final result = await _platform.invokeMethod('getSafRestrictedVolumes');
       if (result != null) {
         return (result as List).cast<String>().toSet();
       }
@@ -230,9 +230,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<void> revokeDirectoryAccess(String path) async {
+  Future<void> revokeSafDirectoryAccess(String path) async {
     try {
-      await _platform.invokeMethod('revokeDirectoryAccess', <String, Object?>{
+      await _platform.invokeMethod('revokeSafDirectoryAccess', <String, Object?>{
         'path': path,
       });
     } on PlatformException catch (e, stack) {
@@ -277,9 +277,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<bool> canRequestMediaFileBulkAccess() async {
+  Future<bool> canRequestMediaStoreBulkAccess() async {
     try {
-      final result = await _platform.invokeMethod('canRequestMediaFileBulkAccess');
+      final result = await _platform.invokeMethod('canRequestMediaStoreBulkAccess');
       if (result != null) return result as bool;
     } on PlatformException catch (e, stack) {
       await reportService.recordError(e, stack);
@@ -288,9 +288,9 @@ class PlatformStorageService implements StorageService {
   }
 
   @override
-  Future<bool> canInsertMedia(Set<VolumeRelativeDirectory> directories) async {
+  Future<bool> canInsertByMediaStore(Set<VolumeRelativeDirectory> directories) async {
     try {
-      final result = await _platform.invokeMethod('canInsertMedia', <String, Object?>{
+      final result = await _platform.invokeMethod('canInsertByMediaStore', <String, Object?>{
         'directories': directories.map((v) => v.toMap()).toList(),
       });
       if (result != null) return result as bool;
@@ -302,12 +302,12 @@ class PlatformStorageService implements StorageService {
 
   // returns whether user granted access to a directory of his choosing
   @override
-  Future<bool> requestDirectoryAccess(String path) async {
+  Future<bool> requestSafMediaDirectoryAccess(String path) async {
     try {
       final opCompleter = Completer<bool>();
       _stream
           .receiveBroadcastStream(<String, Object?>{
-            'op': 'requestDirectoryAccess',
+            'op': 'requestSafMediaDirectoryAccess',
             'path': path,
           })
           .listen(
@@ -328,12 +328,12 @@ class PlatformStorageService implements StorageService {
 
   // returns a directory to which user granted access
   @override
-  Future<String?> requestAnyDirectoryAccess() async {
+  Future<String?> requestSafAnyDirectoryAccess() async {
     try {
       final opCompleter = Completer<String?>();
       _stream
           .receiveBroadcastStream(<String, Object?>{
-            'op': 'requestAnyDirectoryAccess',
+            'op': 'requestSafAnyDirectoryAccess',
           })
           .listen(
             (data) => opCompleter.complete(data as String?),
@@ -353,12 +353,12 @@ class PlatformStorageService implements StorageService {
 
   // returns whether user granted access to URIs
   @override
-  Future<bool> requestMediaFileAccess(List<String> uris, List<String> mimeTypes) async {
+  Future<bool> requestMediaStoreFileAccess(List<String> uris, List<String> mimeTypes) async {
     try {
       final opCompleter = Completer<bool>();
       _stream
           .receiveBroadcastStream(<String, Object?>{
-            'op': 'requestMediaFileAccess',
+            'op': 'requestMediaStoreFileAccess',
             'uris': uris,
             'mimeTypes': mimeTypes,
           })
@@ -373,7 +373,7 @@ class PlatformStorageService implements StorageService {
       // `await` here, so that `completeError` will be caught below
       return await opCompleter.future;
     } on PlatformException catch (e, stack) {
-      if (e.code == 'requestMediaFileAccess-large') {
+      if (e.code == 'requestMediaStoreFileAccess-large') {
         throw TooManyItemsException();
       } else {
         final message = e.message;

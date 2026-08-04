@@ -17,8 +17,8 @@ mixin PermissionAwareMixin {
   }
 
   Future<bool> checkStoragePermissionForAlbums(BuildContext context, Set<String> storageDirs, {Set<AvesEntry>? entries}) async {
-    final restrictedVolumes = await storageService.getRestrictedVolumes();
-    final restrictedDirsLowerCase = await storageService.getRestrictedDirectoriesLowerCase();
+    final restrictedVolumes = await storageService.getSafRestrictedVolumes();
+    final restrictedDirsLowerCase = await storageService.getSafRestrictedDirectoriesLowerCase();
     while (true) {
       final inaccessibleDirs = await storageService.getInaccessibleDirectories(storageDirs);
 
@@ -31,7 +31,7 @@ mixin PermissionAwareMixin {
           .where(restrictedDirsLowerCase.contains)
           .toSet();
       if (restrictedVolumes.isNotEmpty || restrictedInaccessibleDirsLowerCase.isNotEmpty) {
-        if (entries != null && await storageService.canRequestMediaFileBulkAccess()) {
+        if (entries != null && await storageService.canRequestMediaStoreBulkAccess()) {
           // request media file access for items in restricted directories
           final uris = <String>[], mimeTypes = <String>[];
           entries
@@ -63,7 +63,7 @@ mixin PermissionAwareMixin {
           if (uris.isNotEmpty) {
             var granted = false;
             try {
-              granted = await storageService.requestMediaFileAccess(uris, mimeTypes);
+              granted = await storageService.requestMediaStoreFileAccess(uris, mimeTypes);
             } on TooManyItemsException catch (_) {
               await showWarningDialog(
                 context: context,
@@ -72,7 +72,7 @@ mixin PermissionAwareMixin {
             }
             if (!granted) return false;
           }
-        } else if (entries == null && await storageService.canInsertMedia(restrictedInaccessibleDirsLowerCase)) {
+        } else if (entries == null && await storageService.canInsertByMediaStore(restrictedInaccessibleDirsLowerCase)) {
           // insertion in restricted directories
         } else {
           // cannot proceed further
@@ -100,7 +100,7 @@ mixin PermissionAwareMixin {
 
       if (!await checkSystemFilePickerEnabled(context)) return false;
 
-      final granted = await storageService.requestDirectoryAccess(dir.dirPath);
+      final granted = await storageService.requestSafMediaDirectoryAccess(dir.dirPath);
       if (!granted) {
         // abort if the user denies access from the native dialog
         return false;

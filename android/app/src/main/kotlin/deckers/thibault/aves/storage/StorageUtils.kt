@@ -1,4 +1,4 @@
-package deckers.thibault.aves.utils
+package deckers.thibault.aves.storage
 
 import android.Manifest
 import android.content.ContentResolver
@@ -18,11 +18,10 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.text.isDigitsOnly
 import com.commonsware.cwac.document.DocumentFileCompat
-import deckers.thibault.aves.model.provider.ImageProvider
 import deckers.thibault.aves.utils.FileUtils.transferFrom
+import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes.isImage
 import deckers.thibault.aves.utils.MimeTypes.isVideo
-import deckers.thibault.aves.utils.PermissionManager.getGrantedDirForPath
 import deckers.thibault.aves.utils.UriUtils.tryParseId
 import java.io.File
 import java.io.FileInputStream
@@ -57,17 +56,6 @@ object StorageUtils {
     private val TREE_URI_PATH_PATTERN = Pattern.compile("(.*?):(.*)")
 
     const val TRASH_PATH_PLACEHOLDER = "#trash"
-
-    // whether the provided path is on one of this app specific directories:
-    // - /storage/{volume}/Android/data/{package_name}/files
-    // - /data/user/0/{package_name}/files
-    private fun isAppFile(context: Context, path: String): Boolean {
-        val dirs = listOf(
-            *context.getExternalFilesDirs(null).filterNotNull().toTypedArray(),
-            context.filesDir,
-        )
-        return dirs.any { path.startsWith(it.path) }
-    }
 
     private fun appExternalFilesDirFor(context: Context, path: String): File? {
         val dirs = context.getExternalFilesDirs(null).filterNotNull()
@@ -267,7 +255,7 @@ object StorageUtils {
             }
 
             // fallback when UUID does not appear in the SD card volume path
-            context.contentResolver.persistedUriPermissions.firstOrNull { uriPermission ->
+            SafPermissions.getPersistedUriPermissions(context).firstOrNull { uriPermission ->
                 convertTreeDocumentUriToDirPath(context, uriPermission.uri)?.let {
                     getVolumePath(context, it)?.let { grantedVolumePath ->
                         grantedVolumePath == volumePath
@@ -400,11 +388,11 @@ object StorageUtils {
 
     fun getDocumentFile(context: Context, anyPath: String, mediaUri: Uri?): DocumentFileCompat? {
         try {
-            if (requireAccessPermission(context, anyPath)) {
+            if (!FilePermissions.canEdit(context, anyPath)) {
                 // need a document URI (not a media content URI) to open a `DocumentFile` output stream
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && mediaUri != null && isMediaStoreContentUri(mediaUri)) {
                     // cleanest API to get it
-                    PermissionManager.sanitizePersistedUriPermissions(context)
+                    SafPermissions.sanitizePersistedUriPermissions(context)
                     try {
                         val docUri = MediaStore.getDocumentUri(context, mediaUri)
                         if (docUri != null) {
@@ -439,51 +427,60 @@ object StorageUtils {
     fun createDirectoryDocIfAbsent(context: Context, dirPath: String): DocumentFileCompat? {
         try {
             val targetDirPath = ensureTrailingSeparator(dirPath)
-            return if (requireAccessPermission(context, targetDirPath)) {
-                val grantedDir = getGrantedDirForPath(context, targetDirPath) ?: return null
-                val rootTreeDocumentUri = convertDirPathToTreeDocumentUri(context, grantedDir) ?: return null
-                var parentFile: DocumentFileCompat? = DocumentFileCompat.fromTreeUri(context, rootTreeDocumentUri) ?: return null
-                val pathIterator = getPathStepIterator(context, targetDirPath, grantedDir)
-                var currentDirPath = ensureTrailingSeparator(grantedDir)
-                while (pathIterator?.hasNext() == true) {
-                    val dirName = pathIterator.next()
-                    var treeDocFile = findDocumentFileIgnoreCase(parentFile, dirName)
-                    currentDirPath = ensureTrailingSeparator(currentDirPath + dirName)
-
-                    if (treeDocFile == null && File(currentDirPath).exists()) {
-                        // `DocumentsProvider` may be temporarily buggy and fail to list children directories.
-                        // Better to fail fast and revoke directory access, so that the user is aware
-                        // of the issue when trying again with `ACTION_OPEN_DOCUMENT_TREE`.
-                        // Otherwise, we would try to recreate the existing (but unlisted) directory,
-                        // and the document provider will create a new one with a "(1)" suffix.
-                        Log.e(LOG_TAG, "failed to get document file for existing path=$currentDirPath from granted dir=$grantedDir. Revoking granted dir...")
-                        PermissionManager.revokeDirectoryAccess(context, grantedDir)
-                        throw Exception("failed to get document file for existing path=$currentDirPath from grantedDir=$grantedDir")
-                    }
-
-                    if (treeDocFile == null || !treeDocFile.exists()) {
-                        treeDocFile = parentFile?.createDirectory(dirName)
-                        if (treeDocFile == null) {
-                            Log.e(LOG_TAG, "failed to create directory with name=$dirName from parent=$parentFile")
-                            return null
-                        }
-                    }
-                    parentFile = treeDocFile
-                }
-                parentFile
-            } else {
-                val directory = File(targetDirPath)
-                directory.mkdirs()
-                if (!directory.exists()) {
-                    Log.e(LOG_TAG, "failed to create directories at path=$targetDirPath")
-                    return null
-                }
-                DocumentFileCompat.fromFile(directory)
+            return when {
+                FilePermissions.canEdit(context, targetDirPath) -> createDirectoryDocByFile(targetDirPath)
+                else -> createDirectoryDocByTreeDoc(context, targetDirPath)
             }
         } catch (e: Exception) {
             Log.e(LOG_TAG, "failed to create directory at path=$dirPath", e)
             return null
         }
+    }
+
+    private fun createDirectoryDocByFile(dirPath: String): DocumentFileCompat? {
+        val directory = File(dirPath)
+        directory.mkdirs()
+        if (!directory.exists()) {
+            Log.e(LOG_TAG, "failed to create directories at path=$dirPath")
+            return null
+        }
+        return DocumentFileCompat.fromFile(directory)
+    }
+
+    private fun createDirectoryDocByTreeDoc(context: Context, dirPath: String): DocumentFileCompat? {
+        val grantedDir = PermissionManager.getGrantedDirForPath(context, dirPath) ?: return null
+        val rootTreeDocumentUri = convertDirPathToTreeDocumentUri(context, grantedDir) ?: return null
+
+        var parentFile: DocumentFileCompat? = DocumentFileCompat.fromTreeUri(context, rootTreeDocumentUri) ?: return null
+        var currentDirPath = ensureTrailingSeparator(grantedDir)
+        val pathIterator = getPathStepIterator(context, dirPath, grantedDir)
+
+        while (pathIterator?.hasNext() == true) {
+            val dirName = pathIterator.next()
+            var treeDocFile = findDocumentFileIgnoreCase(parentFile, dirName)
+            currentDirPath = ensureTrailingSeparator(currentDirPath + dirName)
+
+            if (treeDocFile == null && File(currentDirPath).exists()) {
+                // `DocumentsProvider` may be temporarily buggy and fail to list children directories.
+                // Better to fail fast and revoke directory access, so that the user is aware
+                // of the issue when trying again with `ACTION_OPEN_DOCUMENT_TREE`.
+                // Otherwise, we would try to recreate the existing (but unlisted) directory,
+                // and the document provider will create a new one with a "(1)" suffix.
+                Log.e(LOG_TAG, "failed to get document file for existing path=$currentDirPath from granted dir=$grantedDir. Revoking granted dir...")
+                SafPermissions.revokeDirectoryAccess(context, grantedDir)
+                throw Exception("failed to get document file for existing path=$currentDirPath from grantedDir=$grantedDir")
+            }
+
+            if (treeDocFile == null || !treeDocFile.exists()) {
+                treeDocFile = parentFile?.createDirectory(dirName)
+                if (treeDocFile == null) {
+                    Log.e(LOG_TAG, "failed to create directory with name=$dirName from parent=$parentFile")
+                    return null
+                }
+            }
+            parentFile = treeDocFile
+        }
+        return parentFile
     }
 
     private fun getDocumentFileFromVolumeTree(context: Context, rootTreeDocumentUri: Uri, anyPath: String): DocumentFileCompat? {
@@ -511,18 +508,6 @@ object StorageUtils {
     /**
      * Misc
      */
-
-    fun canEditByFile(context: Context, path: String) = !requireAccessPermission(context, path)
-
-    fun requireAccessPermission(context: Context, anyPath: String): Boolean {
-        if (isAppFile(context, anyPath)) return false
-
-        // on Android 11, we should always require access permission, even on primary volume
-        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) return true
-
-        val onPrimaryVolume = anyPath.startsWith(getPrimaryVolumePath(context))
-        return !onPrimaryVolume
-    }
 
     fun isMediaStoreContentUri(uri: Uri?): Boolean {
         uri ?: return false
@@ -659,7 +644,7 @@ object StorageUtils {
         NOTE: The user-id in URI authority is ONLY required to find the correct MediaProvider
         process. Once in the correct process, the field is no longer required and may cause
         breakage in MediaProvider code. This is because per process logic is agnostic of
-        user-id. Hence strip away the user ids from URI, if present.
+        user-id. Hence, strip away the user ids from URI, if present.
         ------------
      */
     private fun stripMediaUriUserInfo(uri: Uri): Uri {
@@ -707,7 +692,7 @@ object StorageUtils {
     }
 
     fun openOutputFileDescriptor(context: Context, mimeType: String, uri: Uri, path: String, mode: String): ParcelFileDescriptor? {
-        val effectiveUri = if (ImageProvider.isMediaUriPermissionGranted(context, uri, mimeType)) {
+        val effectiveUri = if (MediaStorePermissions.canEdit(context, uri, mimeType)) {
             getMediaStoreScopedStorageSafeUri(uri, mimeType)
         } else {
             getDocumentFile(context, path, uri)?.uri ?: throw Exception("failed to get document file for path=$path, uri=$uri")
@@ -765,25 +750,6 @@ object StorageUtils {
 
     fun removeTrailingSeparator(dirPath: String): String {
         return if (dirPath.endsWith(File.separator)) dirPath.dropLast(1) else dirPath
-    }
-
-    // `fullPath` should match "volumePath + relativeDir + fileName"
-    class PathSegments(context: Context, fullPath: String) {
-        var volumePath: String? = null // `volumePath` with trailing "/"
-        var relativeDir: String? = null // `relativeDir` with trailing "/"
-        private var fileName: String? = null // null for directories
-
-        init {
-            volumePath = getVolumePath(context, fullPath)
-            if (volumePath != null) {
-                val lastSeparatorIndex = fullPath.lastIndexOf(File.separator) + 1
-                val volumePathLength = volumePath!!.length
-                if (lastSeparatorIndex > volumePathLength) {
-                    fileName = fullPath.substring(lastSeparatorIndex)
-                    relativeDir = fullPath.substring(volumePathLength, lastSeparatorIndex)
-                }
-            }
-        }
     }
 }
 

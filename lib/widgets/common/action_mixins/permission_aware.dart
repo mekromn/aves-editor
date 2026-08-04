@@ -19,6 +19,7 @@ mixin PermissionAwareMixin {
   Future<bool> checkStoragePermissionForAlbums(BuildContext context, Set<String> storageDirs, {Set<AvesEntry>? entries}) async {
     final restrictedVolumes = await storageService.getSafRestrictedVolumes();
     final restrictedDirsLowerCase = await storageService.getSafRestrictedDirectoriesLowerCase();
+    final insertion = entries == null;
     while (true) {
       final inaccessibleDirs = await storageService.getInaccessibleDirectories(storageDirs);
 
@@ -72,7 +73,7 @@ mixin PermissionAwareMixin {
             }
             if (!granted) return false;
           }
-        } else if (entries == null && await storageService.canInsertByMediaStore(restrictedInaccessibleDirsLowerCase)) {
+        } else if (insertion && await storageService.canInsertByMediaStore(restrictedInaccessibleDirsLowerCase)) {
           // insertion in restricted directories
         } else {
           // cannot proceed further

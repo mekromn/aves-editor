@@ -18,6 +18,9 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.core.text.isDigitsOnly
 import com.commonsware.cwac.document.DocumentFileCompat
+import deckers.thibault.aves.storage.apis.FilePermissions
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.utils.FileUtils.transferFrom
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes.isImage
@@ -80,7 +83,21 @@ object StorageUtils {
 
     fun getVaultRoot(context: Context) = ensureTrailingSeparator(File(context.filesDir, "vault").path)
 
-    fun isInVault(context: Context, path: String) = path.startsWith(getVaultRoot(context))
+    fun isInVault(context: Context, anyPath: String) = anyPath.startsWith(getVaultRoot(context))
+
+    fun getAppDirectories(context: Context): Set<String> {
+        return hashSetOf<String>().apply {
+            // /storage/{volume}/Android/data/{package_name}/files
+            addAll(context.getExternalFilesDirs(null).filterNotNull().map { it.path })
+            // /data/user/0/{package_name}/files
+            add(context.filesDir.path)
+        }
+    }
+
+    fun isInAppStorage(context: Context, anyPath: String): Boolean {
+        val dirs = getAppDirectories(context)
+        return dirs.any { anyPath.startsWith(it) }
+    }
 
     /**
      * Volume paths

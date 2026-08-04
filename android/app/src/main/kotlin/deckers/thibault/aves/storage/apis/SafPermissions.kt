@@ -1,4 +1,4 @@
-package deckers.thibault.aves.storage
+package deckers.thibault.aves.storage.apis
 
 import android.annotation.SuppressLint
 import android.app.Activity
@@ -12,11 +12,14 @@ import android.provider.DocumentsContract
 import android.util.Log
 import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.PendingStorageAccessResultHandler
+import deckers.thibault.aves.storage.PathSegments
+import deckers.thibault.aves.storage.PermissionManager
+import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.LogUtils
 import java.io.File
 import java.util.Locale
 
-object SafPermissions {
+object SafPermissions : StoragePermissions {
     private val LOG_TAG = LogUtils.createTag<SafPermissions>()
 
     fun requestDirectoryAccess(activity: Activity, path: String?, onGranted: (uri: Uri) -> Unit, onDenied: () -> Unit) {
@@ -146,10 +149,13 @@ object SafPermissions {
     }
 
     fun getDirToRequest(context: Context, dirPath: String): PathSegments? {
+        if (isPathOnRestrictedVolume(context, dirPath)) return null
+
         val segments = PathSegments(context, dirPath)
         val volumePath = segments.volumePath ?: return null
+
+        // request volume root until Android 10 (API 29)
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            // request volume root until Android 10 (API 29)
             return PathSegments(volumePath, "")
         }
 
@@ -159,23 +165,26 @@ object SafPermissions {
             val dirSegments = relativeDir.split(File.separator).takeWhile { it.isNotEmpty() }
             val primaryDir = dirSegments.firstOrNull()
             if (primaryDir != null) {
-                if (dirSegments.size > 1 && getRestrictedPrimaryDirectories().map { it.lowercase(Locale.ROOT) }.contains(primaryDir.lowercase(Locale.ROOT))) {
-                    // request secondary directory (if any) for restricted primary directory
+                val isPrimaryDirRestricted = getRestrictedPrimaryDirectories().map { it.lowercase(Locale.ROOT) }.contains(primaryDir.lowercase(Locale.ROOT))
+                if (!isPrimaryDirRestricted) {
+                    return PathSegments(volumePath, primaryDir)
+                }
+
+                // request secondary directory (if any) for restricted primary directory
+                if (dirSegments.size > 1) {
                     val dir = dirSegments.take(2).joinToString(File.separator)
                     // only register directories that exist on storage, so they can be selected for access grant
                     if (File(volumePath, dir).exists()) {
                         return PathSegments(volumePath, dir)
                     }
-                } else {
-                    return PathSegments(volumePath, primaryDir)
                 }
             }
-        } else {
-            // the required path is the volume root itself
-            // which cannot be granted, due to Android 11 restrictions
-            return PathSegments(volumePath, "")
         }
 
         return null
+    }
+
+    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
+        return getDirToRequest(context, dirPath) != null
     }
 }

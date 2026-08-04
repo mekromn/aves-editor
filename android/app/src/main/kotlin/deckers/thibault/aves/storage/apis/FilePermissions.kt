@@ -1,15 +1,13 @@
-package deckers.thibault.aves.storage
+package deckers.thibault.aves.storage.apis
 
 import android.content.Context
 import android.os.Build
+import deckers.thibault.aves.storage.StorageUtils
 
-object FilePermissions {
+object FilePermissions: StoragePermissions {
     fun getAccessibleDirectories(context: Context): Set<String> {
         return hashSetOf<String>().apply {
-            // /storage/{volume}/Android/data/{package_name}/files
-            addAll(context.getExternalFilesDirs(null).filterNotNull().map { it.path })
-            // /data/user/0/{package_name}/files
-            add(context.filesDir.path)
+            addAll(StorageUtils.getAppDirectories(context))
 
             // from API 21 / Android 5.0 / Lollipop, removable storage requires access permission, but directory access grant is possible
             // from API 30 / Android 11 / R, any storage requires access permission
@@ -22,5 +20,9 @@ object FilePermissions {
     fun canEdit(context: Context, anyPath: String): Boolean {
         val dirs = getAccessibleDirectories(context)
         return dirs.any { anyPath.startsWith(it) }
+    }
+
+    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
+        return canEdit(context, dirPath)
     }
 }

@@ -5,12 +5,12 @@ import android.os.Build
 import android.os.storage.StorageManager
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safe
 import deckers.thibault.aves.model.FieldMap
-import deckers.thibault.aves.storage.MediaStorePermissions
 import deckers.thibault.aves.storage.PathSegments
 import deckers.thibault.aves.storage.PermissionManager
-import deckers.thibault.aves.storage.SafPermissions
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.getVolumePaths
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.utils.FileUtils.getFolderSize
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -39,6 +39,7 @@ class StorageHandler(private val context: Context) : MethodCallHandler {
             "deleteExternalCache" -> ioScope.launch { safe(call, result, ::deleteExternalCache) }
 
             // permissions
+            "getStorageAccess" -> ioScope.launch { safe(call, result, ::getStorageAccess) }
             "getSafGrantedDirectories" -> ioScope.launch { safe(call, result, ::getSafGrantedDirectories) }
             "getInaccessibleDirectories" -> ioScope.launch { safe(call, result, ::getInaccessibleDirectories) }
             "getSafRestrictedDirectories" -> ioScope.launch { safe(call, result, ::getSafRestrictedDirectories) }
@@ -216,6 +217,20 @@ class StorageHandler(private val context: Context) : MethodCallHandler {
     private fun deleteExternalCache(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {
         context.externalCacheDirs.filter { it.exists() }.forEach { it.deleteRecursively() }
         result.success(true)
+    }
+
+    private fun getStorageAccess(call: MethodCall, result: MethodChannel.Result) {
+        val dirPaths = call.argument<List<String>>("dirPaths")
+        if (dirPaths == null) {
+            result.error("getStorageAccess-args", "missing arguments", null)
+            return
+        }
+
+        val apisByPathSegments = PermissionManager.getStorageAccess(context, dirPaths)
+        result.success(apisByPathSegments.map { (pathSegments, apis) -> hashMapOf(
+            "dir" to pathSegments.toMap(),
+            "apis" to apis.map { api -> api.toKey() }.toList(),
+        ) }.toList())
     }
 
     private fun getSafGrantedDirectories(@Suppress("unused_parameter") call: MethodCall, result: MethodChannel.Result) {

@@ -49,7 +49,7 @@ class MediaEditHandler(private val contextWrapper: ContextWrapper) : MethodCallH
         val exifFields = call.argument<FieldMap>("exif") ?: HashMap()
         val bytes = call.argument<ByteArray>("bytes")
         var destinationDir = call.argument<String>("destinationPath")
-        val nameConflictStrategy = NameConflictStrategy.get(call.argument<String>("nameConflictStrategy"))
+        val nameConflictStrategy = NameConflictStrategy.fromKey(call.argument<String>("nameConflictStrategy"))
         if (uri == null || desiredName == null || bytes == null || destinationDir == null || nameConflictStrategy == null) {
             result.error("captureFrame-args", "missing arguments", null)
             return

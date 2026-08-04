@@ -11,8 +11,8 @@ import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.PendingStorageAccessResultHandler
 import deckers.thibault.aves.channel.calls.AppAdapterHandler
 import deckers.thibault.aves.channel.streams.BaseStreamHandler
-import deckers.thibault.aves.storage.MediaStorePermissions
-import deckers.thibault.aves.storage.SafPermissions
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
 import deckers.thibault.aves.utils.LogUtils

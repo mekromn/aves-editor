@@ -58,7 +58,7 @@ import deckers.thibault.aves.channel.streams.platformtodart.MediaStoreChangeStre
 import deckers.thibault.aves.channel.streams.platformtodart.SettingsChangeStreamHandler
 import deckers.thibault.aves.channel.streams.platformtodart.WindowChangeStreamHandler
 import deckers.thibault.aves.model.FieldMap
-import deckers.thibault.aves.storage.SafPermissions
+import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.anyCauseIs
 import deckers.thibault.aves.utils.getParcelableExtraCompat

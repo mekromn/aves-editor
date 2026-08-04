@@ -1,4 +1,4 @@
-package deckers.thibault.aves.storage
+package deckers.thibault.aves.storage.apis
 
 import android.app.Activity
 import android.content.Context
@@ -14,18 +14,23 @@ import android.util.Log
 import androidx.annotation.RequiresApi
 import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.model.FieldMap
+import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.LogUtils
 import java.io.File
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 
-object MediaStorePermissions {
+object MediaStorePermissions : StoragePermissions {
     private val LOG_TAG = LogUtils.createTag<MediaStorePermissions>()
     private val MEDIA_STORE_INSERTION_PRIMARY_DIRS = listOf(
         Environment.DIRECTORY_DCIM,
         Environment.DIRECTORY_DOWNLOADS,
         Environment.DIRECTORY_PICTURES,
     )
+
+    fun isMediaManagementGranted(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaStore.canManageMedia(context) else false
+    }
 
     fun canRequestBulkAccess(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -92,5 +97,11 @@ object MediaStorePermissions {
         } else {
             false
         }
+    }
+
+    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
+        if (!canRequestBulkAccess()) return false
+        if (StorageUtils.isInAppStorage(context, dirPath)) return false
+        return true
     }
 }

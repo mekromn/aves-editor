@@ -37,7 +37,7 @@ import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictResolution
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
-import deckers.thibault.aves.storage.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.BitmapUtils
 import deckers.thibault.aves.utils.BmpWriter

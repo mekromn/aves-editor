@@ -358,7 +358,7 @@ class AlbumChipSetActionDelegate extends ChipSetActionDelegate<AlbumBaseFilter> 
     source.forgetNewAlbums(todoAlbums);
     source.cleanEmptyAlbums(emptyAlbums);
 
-    if (!await checkStoragePermissionForAlbums(context, filledAlbums)) return;
+    if (!await checkStoragePermissionForAlbums(context, filledAlbums, entries: todoEntries)) return;
 
     await _deleteEntriesForever(context, todoEntries);
 

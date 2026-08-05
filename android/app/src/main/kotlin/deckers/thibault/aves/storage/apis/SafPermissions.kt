@@ -44,8 +44,8 @@ object SafPermissions : StoragePermissions {
         }
     }
 
-    fun revokeDirectoryAccess(context: Context, path: String): Boolean {
-        return StorageUtils.convertDirPathToTreeDocumentUri(context, path)?.let {
+    fun revokeDirectoryAccess(context: Context, dirPath: String): Boolean {
+        return StorageUtils.convertDirPathToTreeDocumentUri(context, dirPath)?.let {
             releasePersistedUriPermission(context, it)
             true
         } ?: false
@@ -116,24 +116,6 @@ object SafPermissions : StoragePermissions {
         return dirs
     }
 
-    fun getRestrictedDirectories(context: Context): Set<PathSegments> {
-        val dirs = HashSet<PathSegments>()
-
-        // cf https://developer.android.com/about/versions/11/privacy/storage#directory-access
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val volumePaths = StorageUtils.getVolumePaths(context)
-            dirs.addAll(volumePaths.map {
-                PathSegments(volumePath = it, relativeDir = "")
-            })
-            for (relativeDir in getRestrictedPrimaryDirectories()) {
-                dirs.addAll(volumePaths.map {
-                    PathSegments(volumePath = it, relativeDir = relativeDir)
-                })
-            }
-        }
-        return dirs
-    }
-
     // returns volumes that cannot be selected via SAF picker
     fun getRestrictedVolumes(context: Context): Set<String> {
         val appUserId = PermissionManager.getAppUserId(context)
@@ -144,11 +126,11 @@ object SafPermissions : StoragePermissions {
         }.toSet()
     }
 
-    fun isPathOnRestrictedVolume(context: Context, path: String): Boolean {
-        return getRestrictedVolumes(context).any(path::startsWith)
+    fun isPathOnRestrictedVolume(context: Context, dirPath: String): Boolean {
+        return getRestrictedVolumes(context).any(dirPath::startsWith)
     }
 
-    fun getDirToRequest(context: Context, dirPath: String): PathSegments? {
+    fun getDirectoryToRequest(context: Context, dirPath: String): PathSegments? {
         if (isPathOnRestrictedVolume(context, dirPath)) return null
 
         val segments = PathSegments(context, dirPath)
@@ -156,7 +138,7 @@ object SafPermissions : StoragePermissions {
 
         // request volume root until Android 10 (API 29)
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.Q) {
-            return PathSegments(volumePath, "")
+            return PathSegments(volumePath, null)
         }
 
         // request primary directory on volume from Android 11 (API 30)
@@ -172,10 +154,10 @@ object SafPermissions : StoragePermissions {
 
                 // request secondary directory (if any) for restricted primary directory
                 if (dirSegments.size > 1) {
-                    val dir = dirSegments.take(2).joinToString(File.separator)
+                    val secondaryDir = dirSegments.take(2).joinToString(File.separator)
                     // only register directories that exist on storage, so they can be selected for access grant
-                    if (File(volumePath, dir).exists()) {
-                        return PathSegments(volumePath, dir)
+                    if (File(volumePath, secondaryDir).exists()) {
+                        return PathSegments(volumePath, secondaryDir)
                     }
                 }
             }
@@ -184,7 +166,7 @@ object SafPermissions : StoragePermissions {
         return null
     }
 
-    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
-        return getDirToRequest(context, dirPath) != null
+    override fun canEditWithUserInteraction(context: Context, dirPath: String, insertion: Boolean): Boolean {
+        return getDirectoryToRequest(context, dirPath) != null
     }
 }

@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.Build
 import deckers.thibault.aves.storage.StorageUtils
 
-object FilePermissions: StoragePermissions {
+object FilePermissions : StoragePermissions {
     fun getAccessibleDirectories(context: Context): Set<String> {
         return hashSetOf<String>().apply {
             addAll(StorageUtils.getAppDirectories(context))
@@ -22,7 +22,8 @@ object FilePermissions: StoragePermissions {
         return dirs.any { anyPath.startsWith(it) }
     }
 
-    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
+    override fun canEditWithUserInteraction(context: Context, dirPath: String, insertion: Boolean): Boolean {
+        if (dirPath == StorageUtils.TRASH_PATH_PLACEHOLDER) return true
         return canEdit(context, dirPath)
     }
 }

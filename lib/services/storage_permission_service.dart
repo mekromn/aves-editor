@@ -10,29 +10,21 @@ import 'package:flutter/services.dart';
 enum StorageApi { file, mediaStore, saf }
 
 abstract class StoragePermissionService {
-  Future<Map<VolumeRelativeDirectory, Set<StorageApi>>> getStorageAccess(Iterable<String> dirPaths);
+  Future<Map<VolumeRelativeDirectory, List<StorageApi>>> getEditionApis(Iterable<String> dirPaths, {required bool insertion});
 
-  Future<bool> canRequestMediaStoreBulkAccess();
-
-  Future<bool> canInsertByMediaStore(Set<VolumeRelativeDirectory> directories);
+  Future<VolumeRelativeDirectory?> getSafDirectoryToRequest(String dirPath);
 
   Future<List<String>> getSafGrantedDirectories();
 
-  Future<Set<VolumeRelativeDirectory>> getInaccessibleDirectories(Iterable<String> dirPaths);
-
-  // returns directories with restricted access,
-  // with the relative part in lowercase, for case-insensitive comparison
-  Future<Set<VolumeRelativeDirectory>> getSafRestrictedDirectoriesLowerCase();
-
-  Future<Set<String>> getSafRestrictedVolumes();
-
-  Future<void> revokeSafDirectoryAccess(String path);
+  Future<void> revokeSafDirectoryAccess(String dirPath);
 
   // returns whether user granted access to a directory of his choosing
   Future<bool> requestSafMediaDirectoryAccess(String path);
 
   // returns a directory to which user granted access
   Future<String?> requestSafAnyDirectoryAccess();
+
+  Future<bool> canRequestMediaStoreBulkAccess();
 
   // returns whether user granted access to URIs
   Future<bool> requestMediaStoreFileAccess(List<String> uris, List<String> mimeTypes);
@@ -43,16 +35,17 @@ class PlatformStoragePermissionService implements StoragePermissionService {
   static final _stream = AvesStreamsChannel('deckers.thibault/aves/activity_result_stream');
 
   @override
-  Future<Map<VolumeRelativeDirectory, Set<StorageApi>>> getStorageAccess(Iterable<String> dirPaths) async {
+  Future<Map<VolumeRelativeDirectory, List<StorageApi>>> getEditionApis(Iterable<String> dirPaths, {required bool insertion}) async {
     try {
-      final result = await _platform.invokeMethod('getStorageAccess', <String, Object?>{
+      final result = await _platform.invokeMethod('getEditionApis', <String, Object?>{
         'dirPaths': dirPaths.toList(),
+        'insertion': insertion,
       });
       if (result != null) {
         return Map.fromEntries(
           (result as List).cast<Map>().map((fields) {
             final dir = VolumeRelativeDirectory.fromMap((fields['dir'] as Map).cast<String, Object?>());
-            final apis = (fields['apis'] as List).cast<String>().map(StorageApi.values.safeByName).nonNulls.toSet();
+            final apis = (fields['apis'] as List).cast<String>().map(StorageApi.values.safeByName).nonNulls.toList();
             return MapEntry(dir, apis);
           }),
         );
@@ -64,27 +57,16 @@ class PlatformStoragePermissionService implements StoragePermissionService {
   }
 
   @override
-  Future<bool> canRequestMediaStoreBulkAccess() async {
+  Future<VolumeRelativeDirectory?> getSafDirectoryToRequest(String dirPath) async {
     try {
-      final result = await _platform.invokeMethod('canRequestMediaStoreBulkAccess');
-      if (result != null) return result as bool;
-    } on PlatformException catch (e, stack) {
-      await reportService.recordError(e, stack);
-    }
-    return false;
-  }
-
-  @override
-  Future<bool> canInsertByMediaStore(Set<VolumeRelativeDirectory> directories) async {
-    try {
-      final result = await _platform.invokeMethod('canInsertByMediaStore', <String, Object?>{
-        'directories': directories.map((v) => v.toMap()).toList(),
+      final result = await _platform.invokeMethod('getSafDirectoryToRequest', <String, Object?>{
+        'dirPath': dirPath,
       });
-      if (result != null) return result as bool;
+      if (result != null) return VolumeRelativeDirectory.fromMap(result as Map);
     } on PlatformException catch (e, stack) {
       await reportService.recordError(e, stack);
     }
-    return false;
+    return null;
   }
 
   @override
@@ -99,59 +81,10 @@ class PlatformStoragePermissionService implements StoragePermissionService {
   }
 
   @override
-  Future<Set<VolumeRelativeDirectory>> getInaccessibleDirectories(Iterable<String> dirPaths) async {
-    try {
-      final result = await _platform.invokeMethod('getInaccessibleDirectories', <String, Object?>{
-        'dirPaths': dirPaths.toList(),
-      });
-      if (result != null) {
-        return (result as List).cast<Map>().map(VolumeRelativeDirectory.fromMap).toSet();
-      }
-    } on PlatformException catch (e, stack) {
-      await reportService.recordError(e, stack);
-    }
-    return {};
-  }
-
-  @override
-  Future<Set<VolumeRelativeDirectory>> getSafRestrictedDirectoriesLowerCase() async {
-    try {
-      final result = await _platform.invokeMethod('getSafRestrictedDirectories');
-      if (result != null) {
-        return (result as List)
-            .cast<Map>()
-            .map(VolumeRelativeDirectory.fromMap)
-            .map(
-              (dir) => dir.copyWith(
-                relativeDir: dir.relativeDir.toLowerCase(),
-              ),
-            )
-            .toSet();
-      }
-    } on PlatformException catch (e, stack) {
-      await reportService.recordError(e, stack);
-    }
-    return {};
-  }
-
-  @override
-  Future<Set<String>> getSafRestrictedVolumes() async {
-    try {
-      final result = await _platform.invokeMethod('getSafRestrictedVolumes');
-      if (result != null) {
-        return (result as List).cast<String>().toSet();
-      }
-    } on PlatformException catch (e, stack) {
-      await reportService.recordError(e, stack);
-    }
-    return {};
-  }
-
-  @override
-  Future<void> revokeSafDirectoryAccess(String path) async {
+  Future<void> revokeSafDirectoryAccess(String dirPath) async {
     try {
       await _platform.invokeMethod('revokeSafDirectoryAccess', <String, Object?>{
-        'path': path,
+        'dirPath': dirPath,
       });
     } on PlatformException catch (e, stack) {
       await reportService.recordError(e, stack);
@@ -207,6 +140,17 @@ class PlatformStoragePermissionService implements StoragePermissionService {
       await reportService.recordError(e, stack);
     }
     return null;
+  }
+
+  @override
+  Future<bool> canRequestMediaStoreBulkAccess() async {
+    try {
+      final result = await _platform.invokeMethod('canRequestMediaStoreBulkAccess');
+      if (result != null) return result as bool;
+    } on PlatformException catch (e, stack) {
+      await reportService.recordError(e, stack);
+    }
+    return false;
   }
 
   // returns whether user granted access to URIs

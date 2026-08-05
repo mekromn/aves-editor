@@ -23,12 +23,13 @@ import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
 import deckers.thibault.aves.storage.PathSegments
+import deckers.thibault.aves.storage.PermissionManager
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
 import deckers.thibault.aves.storage.StorageUtils.removeTrailingSeparator
 import deckers.thibault.aves.storage.apis.FilePermissions
 import deckers.thibault.aves.storage.apis.MediaStorePermissions
-import deckers.thibault.aves.storage.apis.SafPermissions
+import deckers.thibault.aves.storage.apis.StorageApi
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
 import deckers.thibault.aves.utils.MimeTypes.extensionFor
@@ -651,47 +652,48 @@ class MediaStoreImageProvider : ImageProvider() {
         defaultExtension: String?,
         write: (OutputStream) -> Unit,
     ): String {
-        if (shouldInsertByFile(activity, targetDir)) {
-            return insertByFile(
-                targetDir = targetDir,
-                targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                write = write,
-            )
-        }
-
-        if (shouldInsertByMediaStore(activity, targetDir) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            return insertByMediaStore(
-                activity = activity,
-                mimeType = mimeType,
-                targetDir = targetDir,
-                targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                write = write,
-            )
-        }
-
-        return insertByTreeDoc(
-            activity = activity,
-            mimeType = mimeType,
-            targetDir = targetDir,
-            targetDirDocFile = targetDirDocFile,
-            targetNameWithoutExtension = targetNameWithoutExtension,
-            defaultExtension = defaultExtension,
-            write = write,
+        val storageEditionApis = PermissionManager.getStorageEditionApis(
+            context = activity,
+            dirPaths = listOf(ensureTrailingSeparator(targetDir)),
+            insertion = true,
         )
-    }
+        storageEditionApis.values.firstOrNull()?.firstOrNull()?.let { api ->
+            when (api) {
+                StorageApi.FILE -> {
+                    return insertByFile(
+                        targetDir = targetDir,
+                        targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                        write = write,
+                    )
+                }
 
-    private fun shouldInsertByFile(context: Context, targetDir: String): Boolean {
-        return StorageUtils.isInVault(context, targetDir)
-    }
+                StorageApi.MEDIA_STORE -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        return insertByMediaStore(
+                            activity = activity,
+                            mimeType = mimeType,
+                            targetDir = targetDir,
+                            targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                            write = write,
+                        )
+                    }
+                }
 
-    private fun shouldInsertByMediaStore(context: Context, targetDir: String): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && StorageUtils.isInDownloadPath(context, targetDir)) {
-            return true
+                StorageApi.SAF -> {
+                    return insertByTreeDoc(
+                        activity = activity,
+                        mimeType = mimeType,
+                        targetDir = targetDir,
+                        targetDirDocFile = targetDirDocFile,
+                        targetNameWithoutExtension = targetNameWithoutExtension,
+                        defaultExtension = defaultExtension,
+                        write = write,
+                    )
+                }
+            }
         }
-        if (SafPermissions.isPathOnRestrictedVolume(context, targetDir)) {
-            return true
-        }
-        return false
+
+        throw Exception("Failed to find storage API for insertion in targetDir=$targetDir")
     }
 
     private fun insertByFile(

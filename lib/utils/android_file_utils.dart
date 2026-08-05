@@ -96,12 +96,17 @@ class AndroidFileUtils {
 
   bool isDownloadPath(String path) => path.toLowerCase() == downloadPath;
 
-  StorageVolume? getStorageVolume(String? path) {
-    if (path == null) return null;
-    final volume = storageVolumes.firstWhereOrNull((v) => path.startsWith(v.path));
+  StorageVolume? getStorageVolume(String? anyPath) {
+    if (anyPath == null) return null;
+    final volume = storageVolumes.firstWhereOrNull((v) => anyPath.startsWith(v.path));
     // storage volume path includes trailing '/', but argument path may or may not,
     // which is an issue when the path is at the root
-    return volume != null || path.endsWith(separator) ? volume : getStorageVolume('$path$separator');
+    return volume != null || anyPath.endsWith(separator) ? volume : getStorageVolume('$anyPath$separator');
+  }
+
+  String? ensureTrailingSeparator(String? dirPath) {
+    if (dirPath == null) return null;
+    return dirPath.endsWith(separator) ? dirPath : dirPath + separator;
   }
 
   // prefer static method over a null returning factory constructor

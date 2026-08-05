@@ -1,8 +1,8 @@
 package deckers.thibault.aves.storage
 
 import android.content.Context
-import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
 import deckers.thibault.aves.storage.apis.FilePermissions
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
 import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.storage.apis.StorageApi
 import java.util.regex.Pattern
@@ -27,35 +27,29 @@ object PermissionManager {
         return null
     }
 
-    fun getGrantedDirForPath(context: Context, anyPath: String): String? {
-        return getAccessibleDirs(context).firstOrNull { anyPath.startsWith(it) }
-    }
-
-    fun getInaccessibleDirectories(context: Context, dirPaths: List<String>): Set<PathSegments> {
-        val concreteDirPaths = dirPaths.filter { it != StorageUtils.TRASH_PATH_PLACEHOLDER }
-        val accessibleDirs = getAccessibleDirs(context)
-        val inaccessibleDirPaths = concreteDirPaths.map(StorageUtils::ensureTrailingSeparator).filter { dirPath ->
-            accessibleDirs.none(dirPath::startsWith)
-        }.toSet()
-
-        // find optimal directories to request for SAF access
-        return inaccessibleDirPaths.mapNotNull { SafPermissions.getDirToRequest(context, it) }.toSet()
-    }
-
     // returns paths accessible to the app (granted by the user or by default)
-    private fun getAccessibleDirs(context: Context): Set<String> {
+    fun getAccessibleDirs(context: Context): Set<String> {
         return hashSetOf<String>().apply {
             addAll(SafPermissions.getGrantedDirectories(context))
             addAll(FilePermissions.getAccessibleDirectories(context))
         }
     }
 
-    fun getStorageAccess(context: Context, dirPaths: List<String>): Map<PathSegments, Set<StorageApi>> {
-        val storageAccess = HashMap<PathSegments, Set<StorageApi>>()
-        dirPaths.map(::ensureTrailingSeparator).forEach { dirPath ->
-            val apis = StorageApi.entries.filter { api ->
-                api.getPermissionDelegate().canEditWithUserInteraction(context, dirPath)
-            }.toSet()
+    fun getPreferredEditionApis(): List<StorageApi> {
+        return if (MediaStorePermissions.canRequestMediaManagement()) {
+            listOf(StorageApi.FILE, StorageApi.MEDIA_STORE, StorageApi.SAF)
+        } else {
+            listOf(StorageApi.FILE, StorageApi.SAF, StorageApi.MEDIA_STORE)
+        }
+    }
+
+    fun getStorageEditionApis(context: Context, dirPaths: List<String>, insertion: Boolean): Map<PathSegments, List<StorageApi>> {
+        val preferredEditionApis = getPreferredEditionApis()
+        val storageAccess = HashMap<PathSegments, List<StorageApi>>()
+        dirPaths.forEach { dirPath ->
+            val apis = preferredEditionApis.filter { api ->
+                api.getPermissionDelegate().canEditWithUserInteraction(context, dirPath, insertion)
+            }.toList()
             storageAccess[PathSegments(context, dirPath)] = apis
         }
 

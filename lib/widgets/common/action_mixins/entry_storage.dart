@@ -215,7 +215,7 @@ mixin EntryStorageMixin on FeedbackMixin, PermissionAwareMixin, SizeAwareMixin, 
     if (!await checkStoragePermissionForAlbums(context, destinationAlbums)) return false;
 
     // permission for modification at origins
-    final originAlbums = entries.map((e) => e.storageDirectory).nonNulls.toSet();
+    final originAlbums = entries.map((entry) => entry.storageDirectory).nonNulls.toSet();
     if ({MoveType.move, MoveType.toBin}.contains(moveType) && !await checkStoragePermissionForAlbums(context, originAlbums, entries: entries)) return false;
 
     final hasEnoughSpaceByDestination = await Future.wait(
@@ -397,7 +397,7 @@ mixin EntryStorageMixin on FeedbackMixin, PermissionAwareMixin, SizeAwareMixin, 
       case .toBin:
         entriesByDestination[AndroidFileUtils.trashDirPath] = entries;
       case .fromBin:
-        groupBy<AvesEntry, String?>(entries, (e) => e.directory).forEach((originAlbum, dirEntries) {
+        groupBy<AvesEntry, String?>(entries, (entry) => entry.directory).forEach((originAlbum, dirEntries) {
           if (originAlbum != null) {
             entriesByDestination[originAlbum] = dirEntries.toSet();
           }

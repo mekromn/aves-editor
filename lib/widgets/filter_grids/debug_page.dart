@@ -21,14 +21,14 @@ class FilterDebugPage extends StatefulWidget {
 
 class _FilterDebugPageState extends State<FilterDebugPage> {
   CollectionFilter get filter => widget.filter;
-  Future<Set<StorageApi>?>? _storageApiLoader;
+  Future<List<StorageApi>?>? _storageApiLoader;
 
   @override
   void initState() {
     super.initState();
     final _filter = filter;
     if (_filter is StoredAlbumFilter) {
-      _storageApiLoader = storagePermissionService.getStorageAccess({_filter.album}).then((v) {
+      _storageApiLoader = storagePermissionService.getEditionApis({_filter.album}, insertion: false).then((v) {
         return v.entries.firstOrNull?.value;
       });
     }
@@ -48,7 +48,7 @@ class _FilterDebugPageState extends State<FilterDebugPage> {
               info: filter.toJsonMap().map((k, v) => MapEntry(k, v.toString())),
             ),
             const Divider(),
-            FutureBuilder<Set<StorageApi>?>(
+            FutureBuilder<List<StorageApi>?>(
               future: _storageApiLoader,
               builder: (context, snapshot) {
                 final apis = snapshot.data;

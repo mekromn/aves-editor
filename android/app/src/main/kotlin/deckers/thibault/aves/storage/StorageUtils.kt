@@ -465,7 +465,7 @@ object StorageUtils {
     }
 
     private fun createDirectoryDocByTreeDoc(context: Context, dirPath: String): DocumentFileCompat? {
-        val grantedDir = PermissionManager.getGrantedDirForPath(context, dirPath) ?: return null
+        val grantedDir = PermissionManager.getAccessibleDirs(context).firstOrNull { dirPath.startsWith(it) } ?: return null
         val rootTreeDocumentUri = convertDirPathToTreeDocumentUri(context, grantedDir) ?: return null
 
         var parentFile: DocumentFileCompat? = DocumentFileCompat.fromTreeUri(context, rootTreeDocumentUri) ?: return null

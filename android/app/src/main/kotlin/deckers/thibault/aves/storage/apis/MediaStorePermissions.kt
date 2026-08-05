@@ -13,7 +13,7 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.annotation.RequiresApi
 import deckers.thibault.aves.MainActivity
-import deckers.thibault.aves.model.FieldMap
+import deckers.thibault.aves.storage.PathSegments
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.LogUtils
 import java.io.File
@@ -28,25 +28,16 @@ object MediaStorePermissions : StoragePermissions {
         Environment.DIRECTORY_PICTURES,
     )
 
-    fun isMediaManagementGranted(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaStore.canManageMedia(context) else false
-    }
-
     fun canRequestBulkAccess(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
     }
 
-    fun canInsert(directories: List<FieldMap>): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            val insertionDirsLower = MEDIA_STORE_INSERTION_PRIMARY_DIRS.map { it.lowercase(Locale.ROOT) }
-            directories.all {
-                val relativeDir = it["relativeDir"] as String
-                val segments = relativeDir.split(File.separator)
-                segments.isNotEmpty() && insertionDirsLower.contains(segments.first().lowercase(Locale.ROOT))
-            }
-        } else {
-            true
-        }
+    fun canRequestMediaManagement(): Boolean {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    }
+
+    fun isMediaManagementGranted(context: Context): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaStore.canManageMedia(context) else false
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
@@ -99,9 +90,17 @@ object MediaStorePermissions : StoragePermissions {
         }
     }
 
-    override fun canEditWithUserInteraction(context: Context, dirPath: String): Boolean {
+    override fun canEditWithUserInteraction(context: Context, dirPath: String, insertion: Boolean): Boolean {
         if (!canRequestBulkAccess()) return false
         if (StorageUtils.isInAppStorage(context, dirPath)) return false
+        if (insertion) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val insertionDirsLower = MEDIA_STORE_INSERTION_PRIMARY_DIRS.map { it.lowercase(Locale.ROOT) }
+                val relativeDir = PathSegments(context, dirPath).relativeDir
+                val primaryDir = relativeDir?.split(File.separator)?.firstOrNull()
+                return primaryDir != null && insertionDirsLower.contains(primaryDir.lowercase(Locale.ROOT))
+            }
+        }
         return true
     }
 }

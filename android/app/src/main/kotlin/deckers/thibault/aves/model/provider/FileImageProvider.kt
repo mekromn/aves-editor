@@ -125,10 +125,16 @@ internal class FileImageProvider : ImageProvider() {
         private val LOG_TAG = LogUtils.createTag<MediaStoreImageProvider>()
 
         fun insert(
-            targetDir: String,
+            targetDirPath: String,
             targetFileName: String,
             write: (OutputStream) -> Unit,
         ): String {
+            val targetDir = File(targetDirPath)
+            targetDir.mkdirs()
+            if (!targetDir.exists()) {
+                throw Exception("failed to create directory at path=$targetDirPath")
+            }
+
             val file = File(targetDir, targetFileName)
             FileOutputStream(file).use(write)
             return file.path

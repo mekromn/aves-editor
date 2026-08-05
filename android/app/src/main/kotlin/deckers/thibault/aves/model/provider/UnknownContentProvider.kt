@@ -64,12 +64,12 @@ open class UnknownContentProvider : ImageProvider() {
                 cursor.close()
             }
         } catch (e: Exception) {
-            callback.onFailure(Exception("Failed to query content", e))
+            callback.onFailure(Exception("failed to query content", e))
             return
         }
 
         if (fields[EntryFields.SOURCE_MIME_TYPE] == null) {
-            callback.onFailure(Exception("Failed to find MIME type for uri=$uri"))
+            callback.onFailure(Exception("failed to find MIME type for uri=$uri"))
             return
         }
 

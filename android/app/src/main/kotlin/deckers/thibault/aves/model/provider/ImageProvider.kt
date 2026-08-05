@@ -94,47 +94,43 @@ abstract class ImageProvider {
         defaultExtension: String?,
         write: (OutputStream) -> Unit,
     ): String {
-        val storageEditionApis = PermissionManager.getStorageEditionApis(
+        val editionApi = PermissionManager.getStorageEditionApis(
             context = context,
             dirPaths = listOf(ensureTrailingSeparator(targetDir)),
             insertion = true,
-        )
-        storageEditionApis.values.firstOrNull()?.firstOrNull()?.let { api ->
-            when (api) {
-                StorageApi.FILE -> {
-                    return FileImageProvider.insert(
-                        targetDir = targetDir,
-                        targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                        write = write,
-                    )
-                }
+        ).values.firstOrNull()?.firstOrNull()
+            ?: throw Exception("failed to find API for insertion in targetDir=$targetDir")
 
-                StorageApi.MEDIA_STORE -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        return MediaStoreImageProvider.insert(
-                            context = context,
-                            mimeType = mimeType,
-                            targetDir = targetDir,
-                            targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                            write = write,
-                        )
-                    }
-                }
+        when (editionApi) {
+            StorageApi.FILE -> {
+                return FileImageProvider.insert(
+                    targetDirPath = targetDir,
+                    targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                    write = write,
+                )
+            }
 
-                StorageApi.SAF -> {
-                    return insertByTreeDoc(
-                        context = context,
-                        mimeType = mimeType,
-                        targetDir = targetDir,
-                        targetNameWithoutExtension = targetNameWithoutExtension,
-                        defaultExtension = defaultExtension,
-                        write = write,
-                    )
-                }
+            StorageApi.MEDIA_STORE -> {
+                return MediaStoreImageProvider.insert(
+                    context = context,
+                    mimeType = mimeType,
+                    targetDir = targetDir,
+                    targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                    write = write,
+                )
+            }
+
+            StorageApi.SAF -> {
+                return insertByTreeDoc(
+                    context = context,
+                    mimeType = mimeType,
+                    targetDir = targetDir,
+                    targetNameWithoutExtension = targetNameWithoutExtension,
+                    defaultExtension = defaultExtension,
+                    write = write,
+                )
             }
         }
-
-        throw Exception("Failed to find storage API for insertion in targetDir=$targetDir")
     }
 
     // `DocumentsContract.moveDocument()` needs `sourceParentDocumentUri`, which could be different for each entry

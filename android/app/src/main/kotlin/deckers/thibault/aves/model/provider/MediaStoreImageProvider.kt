@@ -23,16 +23,13 @@ import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
 import deckers.thibault.aves.storage.PathSegments
-import deckers.thibault.aves.storage.PermissionManager
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
 import deckers.thibault.aves.storage.StorageUtils.removeTrailingSeparator
 import deckers.thibault.aves.storage.apis.FilePermissions
 import deckers.thibault.aves.storage.apis.MediaStorePermissions
-import deckers.thibault.aves.storage.apis.StorageApi
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
-import deckers.thibault.aves.utils.MimeTypes.extensionFor
 import deckers.thibault.aves.utils.MimeTypes.isHeic
 import deckers.thibault.aves.utils.MimeTypes.isImage
 import deckers.thibault.aves.utils.MimeTypes.isVideo
@@ -41,7 +38,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.io.SyncFailedException
@@ -463,7 +459,7 @@ class MediaStoreImageProvider : ImageProvider() {
     }
 
     override suspend fun moveMultiple(
-        activity: Activity,
+        context: Context,
         copy: Boolean,
         nameConflictStrategy: NameConflictStrategy,
         entriesByTargetDir: Map<String, List<AvesEntry>>,
@@ -475,17 +471,15 @@ class MediaStoreImageProvider : ImageProvider() {
             val entries = kv.value
 
             val toBin = targetDir == StorageUtils.TRASH_PATH_PLACEHOLDER
-            val toVault = StorageUtils.isInVault(activity, targetDir)
+            val toVault = StorageUtils.isInVault(context, targetDir)
             val toAppDir = toBin || toVault
 
             var effectiveTargetDir: String? = null
-            var targetDirDocFile: DocumentFileCompat? = null
             if (!toAppDir) {
                 effectiveTargetDir = targetDir
-                targetDirDocFile = StorageUtils.createDirectoryDocIfAbsent(activity, targetDir)
                 if (!File(targetDir).exists()) {
                     // download subdirectories can be created later by Media Store insertion
-                    if (!StorageUtils.isInDownloadPath(activity, targetDir)) {
+                    if (!StorageUtils.isInDownloadPath(context, targetDir)) {
                         callback.onFailure(Exception("failed to create directory at path=$targetDir"))
                         return
                     }
@@ -526,14 +520,12 @@ class MediaStoreImageProvider : ImageProvider() {
                 // - the Media Store only allows inserting in specific primary directories ("DCIM", "Pictures") when using scoped storage
                 try {
                     val appDir = when {
-                        toBin -> StorageUtils.trashDirFor(activity, sourcePath ?: StorageUtils.getPrimaryVolumePath(activity))
+                        toBin -> StorageUtils.trashDirFor(context, sourcePath ?: StorageUtils.getPrimaryVolumePath(context))
                         toVault -> File(targetDir)
                         else -> null
                     }
                     if (appDir != null) {
                         effectiveTargetDir = ensureTrailingSeparator(appDir.path)
-                        targetDirDocFile = DocumentFileCompat.fromFile(appDir)
-
                         if (toVault) {
                             appDir.mkdirs()
                         }
@@ -543,15 +535,14 @@ class MediaStoreImageProvider : ImageProvider() {
                         val newFields = if (isCancelledOp()) skippedFieldMap else {
                             val sourceFile = if (sourcePath != null) File(sourcePath) else null
                             if (sourceFile != null && !sourceFile.exists() && toBin) {
-                                delete(activity, sourceUri, sourcePath, mimeType = mimeType)
+                                delete(context, sourceUri, sourcePath, mimeType = mimeType)
                                 deletedFieldMap
                             } else {
                                 moveSingle(
-                                    activity = activity,
+                                    context = context,
                                     sourceFile = sourceFile,
                                     sourceUri = sourceUri,
                                     targetDir = effectiveTargetDir,
-                                    targetDirDocFile = targetDirDocFile,
                                     desiredName = desiredName ?: sourceFile?.name ?: sourceUri.lastPathSegment ?: createTimeStampFileName(),
                                     nameConflictStrategy = nameConflictStrategy,
                                     mimeType = mimeType,
@@ -572,11 +563,10 @@ class MediaStoreImageProvider : ImageProvider() {
     }
 
     private suspend fun moveSingle(
-        activity: Activity,
+        context: Context,
         sourceFile: File?,
         sourceUri: Uri,
         targetDir: String,
-        targetDirDocFile: DocumentFileCompat?,
         desiredName: String,
         nameConflictStrategy: NameConflictStrategy,
         mimeType: String,
@@ -597,7 +587,7 @@ class MediaStoreImageProvider : ImageProvider() {
 
         val desiredNameWithoutExtension = desiredName.substringBeforeLast(".")
         val resolution = resolveTargetFileNameWithoutExtension(
-            contextWrapper = activity,
+            context = context,
             dir = targetDir,
             desiredNameWithoutExtension = desiredNameWithoutExtension,
             mimeType = mimeType,
@@ -606,12 +596,11 @@ class MediaStoreImageProvider : ImageProvider() {
         )
         val targetNameWithoutExtension = resolution.nameWithoutExtension ?: return skippedFieldMap
 
-        val sourceDocFile = DocumentFileCompat.fromSingleUri(activity, sourceUri)
+        val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
         val targetPath = createSingle(
-            activity = activity,
+            context = context,
             mimeType = mimeType,
             targetDir = targetDir,
-            targetDirDocFile = targetDirDocFile,
             targetNameWithoutExtension = targetNameWithoutExtension,
             defaultExtension = sourceExtension,
         ) { output: OutputStream ->
@@ -628,7 +617,7 @@ class MediaStoreImageProvider : ImageProvider() {
         if (!copy) {
             // delete original entry
             try {
-                delete(activity, sourceUri, sourcePath, mimeType)
+                delete(context, sourceUri, sourcePath, mimeType)
             } catch (e: Exception) {
                 Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
             }
@@ -639,171 +628,24 @@ class MediaStoreImageProvider : ImageProvider() {
                 EntryFields.TRASH_PATH to targetPath,
             )
         } else {
-            scanNewPath(activity, targetPath, mimeType)
+            scanNewPath(context, targetPath, mimeType)
         }
-    }
-
-    fun createSingle(
-        activity: Activity,
-        mimeType: String,
-        targetDir: String,
-        targetDirDocFile: DocumentFileCompat?,
-        targetNameWithoutExtension: String,
-        defaultExtension: String?,
-        write: (OutputStream) -> Unit,
-    ): String {
-        val storageEditionApis = PermissionManager.getStorageEditionApis(
-            context = activity,
-            dirPaths = listOf(ensureTrailingSeparator(targetDir)),
-            insertion = true,
-        )
-        storageEditionApis.values.firstOrNull()?.firstOrNull()?.let { api ->
-            when (api) {
-                StorageApi.FILE -> {
-                    return insertByFile(
-                        targetDir = targetDir,
-                        targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                        write = write,
-                    )
-                }
-
-                StorageApi.MEDIA_STORE -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        return insertByMediaStore(
-                            activity = activity,
-                            mimeType = mimeType,
-                            targetDir = targetDir,
-                            targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
-                            write = write,
-                        )
-                    }
-                }
-
-                StorageApi.SAF -> {
-                    return insertByTreeDoc(
-                        activity = activity,
-                        mimeType = mimeType,
-                        targetDir = targetDir,
-                        targetDirDocFile = targetDirDocFile,
-                        targetNameWithoutExtension = targetNameWithoutExtension,
-                        defaultExtension = defaultExtension,
-                        write = write,
-                    )
-                }
-            }
-        }
-
-        throw Exception("Failed to find storage API for insertion in targetDir=$targetDir")
-    }
-
-    private fun insertByFile(
-        targetDir: String,
-        targetFileName: String,
-        write: (OutputStream) -> Unit,
-    ): String {
-        val file = File(targetDir, targetFileName)
-        FileOutputStream(file).use(write)
-        return file.path
-    }
-
-    @RequiresApi(Build.VERSION_CODES.Q)
-    private fun insertByMediaStore(
-        activity: Activity,
-        mimeType: String,
-        targetDir: String,
-        targetFileName: String,
-        write: (OutputStream) -> Unit,
-    ): String {
-        val volumePath = StorageUtils.getVolumePath(activity, anyPath = targetDir)
-        val relativePath = targetDir.substring(volumePath?.length ?: 0)
-
-        val contentUri = StorageUtils.getMediaStoreRootContentUri(activity, mimeType = mimeType, anyPath = targetDir)
-            ?: throw Exception("failed to get MediaStore root content URI for mimeType=$mimeType targetDir=$targetDir")
-
-        val values = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, targetFileName)
-            put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        val resolver = activity.contentResolver
-        val uri = resolver.insert(contentUri, values)
-
-        uri?.let {
-            resolver.openOutputStream(uri)?.use(write)
-            values.clear()
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
-        } ?: throw Exception("MediaStore failed for some reason")
-
-        return File(targetDir, targetFileName).path
-    }
-
-    // `DocumentsContract.moveDocument()` needs `sourceParentDocumentUri`, which could be different for each entry
-    // `DocumentsContract.copyDocument()` yields "Unsupported call: android:copyDocument"
-    // when used with entry URI as `sourceDocumentUri`, and targetDirDocFile URI as `targetParentDocumentUri`
-    private fun insertByTreeDoc(
-        activity: Activity,
-        mimeType: String,
-        targetDir: String,
-        targetDirDocFile: DocumentFileCompat?,
-        targetNameWithoutExtension: String,
-        defaultExtension: String?,
-        write: (OutputStream) -> Unit,
-    ): String {
-        targetDirDocFile ?: throw Exception("failed to get tree doc for directory at path=$targetDir")
-
-        // the file created from a `TreeDocumentFile` is also a `TreeDocumentFile`
-        // but in order to open an output stream to it, we need to use a `SingleDocumentFile`
-        // through a document URI, not a tree URI
-        // note that `DocumentFile.getParentFile()` returns null if we did not pick a tree first
-        var targetTreeFile = targetDirDocFile.createFile(mimeType, targetNameWithoutExtension)
-        var targetDocFile = DocumentFileCompat.fromSingleUri(activity, targetTreeFile.uri)
-
-        // providing a display name and a MIME type does not guarantee
-        // that the created document will be backed by a file with a valid media extension,
-        // but having an extension is essential for media detection by Android,
-        // so we retry with a display name that includes the extension
-        if ((targetDocFile.extension == null || targetDocFile.extension.isEmpty() || targetDocFile.extension == "bin") && defaultExtension != null) {
-            if (targetDocFile.exists()) {
-                targetDocFile.delete()
-            }
-
-            val extension = if (defaultExtension.startsWith(".")) defaultExtension else ".$defaultExtension"
-            targetTreeFile = targetDirDocFile.createFile(mimeType, "$targetNameWithoutExtension$extension")
-            targetDocFile = DocumentFileCompat.fromSingleUri(activity, targetTreeFile.uri)
-        }
-
-        try {
-            targetDocFile.openOutputStream().use(write)
-        } catch (e: Exception) {
-            // remove empty file
-            if (targetDocFile.exists()) {
-                targetDocFile.delete()
-            }
-            throw e
-        }
-
-        // the source file name and the created document file name can be different when:
-        // - a file with the same name already exists, some implementations give a suffix like ` (1)`, some *do not*
-        // - the original extension does not match the extension added by the underlying provider
-        val fileName = targetDocFile.name
-        return targetDir + fileName
     }
 
     override suspend fun renameSingle(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
         newFile: File,
     ): FieldMap = when {
-        FilePermissions.canEdit(activity, oldPath) -> renameSingleByFile(activity, mimeType, oldMediaUri, oldPath, newFile)
-        MediaStorePermissions.canEdit(activity, oldMediaUri, mimeType) -> renameSingleByMediaStore(activity, mimeType, oldMediaUri, newFile)
-        else -> renameSingleByTreeDoc(activity, mimeType, oldMediaUri, oldPath, newFile)
+        FilePermissions.canEdit(context, oldPath) -> renameSingleByFile(context, mimeType, oldMediaUri, oldPath, newFile)
+        MediaStorePermissions.canEdit(context, oldMediaUri, mimeType) -> renameSingleByMediaStore(context, mimeType, oldMediaUri, newFile)
+        else -> renameSingleByTreeDoc(context, mimeType, oldMediaUri, oldPath, newFile)
     }
 
     private suspend fun renameSingleByMediaStore(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         mediaUri: Uri,
         newFile: File
@@ -819,7 +661,7 @@ class MediaStoreImageProvider : ImageProvider() {
         val tempValues = ContentValues().apply {
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
-        if (activity.contentResolver.update(uri, tempValues, null, null) == 0) {
+        if (context.contentResolver.update(uri, tempValues, null, null) == 0) {
             throw Exception("failed to update fields for uri=$uri")
         }
 
@@ -829,23 +671,23 @@ class MediaStoreImageProvider : ImageProvider() {
             put(MediaStore.MediaColumns.TITLE, newFile.nameWithoutExtension)
             put(MediaStore.MediaColumns.IS_PENDING, 0)
         }
-        if (activity.contentResolver.update(uri, finalValues, null, null) == 0) {
+        if (context.contentResolver.update(uri, finalValues, null, null) == 0) {
             throw Exception("failed to update fields for uri=$uri")
         }
 
         // URI should not change
-        return scanNewPathByMediaStore(activity, newFile.path, mimeType)
+        return scanNewPathByMediaStore(context, newFile.path, mimeType)
     }
 
     private suspend fun renameSingleByTreeDoc(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
         newFile: File
     ): FieldMap {
         Log.d(LOG_TAG, "rename document at uri=$oldMediaUri path=$oldPath")
-        val df = StorageUtils.getDocumentFile(activity, oldPath, oldMediaUri)
+        val df = StorageUtils.getDocumentFile(context, oldPath, oldMediaUri)
         df ?: throw Exception("failed to get document at path=$oldPath")
 
         val requestedName = newFile.name
@@ -859,12 +701,12 @@ class MediaStoreImageProvider : ImageProvider() {
         }
         val newPath = File(newFile.parentFile, df.name).path
 
-        scanObsoletePath(activity, oldMediaUri, oldPath, mimeType)
-        return scanNewPathByMediaStore(activity, newPath, mimeType)
+        scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
+        return scanNewPathByMediaStore(context, newPath, mimeType)
     }
 
     private suspend fun renameSingleByFile(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
@@ -875,8 +717,8 @@ class MediaStoreImageProvider : ImageProvider() {
         if (!renamed) {
             throw Exception("failed to rename file at path=$oldPath")
         }
-        scanObsoletePath(activity, oldMediaUri, oldPath, mimeType)
-        return scanNewPathByMediaStore(activity, newFile.path, mimeType)
+        scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
+        return scanNewPathByMediaStore(context, newFile.path, mimeType)
     }
 
     override fun scanPostMetadataEdit(context: Context, path: String, uri: Uri, mimeType: String, newFields: FieldMap, callback: ImageOpCallback) {
@@ -1090,6 +932,38 @@ class MediaStoreImageProvider : ImageProvider() {
                 MediaStore.MediaColumns.ORIENTATION,
             ) else emptyArray()
         )
+
+        @RequiresApi(Build.VERSION_CODES.Q)
+        fun insert(
+            context: Context,
+            mimeType: String,
+            targetDir: String,
+            targetFileName: String,
+            write: (OutputStream) -> Unit,
+        ): String {
+            val volumePath = StorageUtils.getVolumePath(context, anyPath = targetDir)
+            val relativePath = targetDir.substring(volumePath?.length ?: 0)
+
+            val contentUri = StorageUtils.getMediaStoreRootContentUri(context, mimeType = mimeType, anyPath = targetDir)
+                ?: throw Exception("failed to get MediaStore root content URI for mimeType=$mimeType targetDir=$targetDir")
+
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, targetFileName)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(contentUri, values)
+
+            uri?.let {
+                resolver.openOutputStream(uri)?.use(write)
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } ?: throw Exception("MediaStore failed for some reason")
+
+            return File(targetDir, targetFileName).path
+        }
     }
 }
 

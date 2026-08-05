@@ -1,6 +1,5 @@
 package deckers.thibault.aves.model.provider
 
-import android.app.Activity
 import android.content.Context
 import android.net.Uri
 import android.util.Log
@@ -11,6 +10,8 @@ import deckers.thibault.aves.model.SourceEntry
 import deckers.thibault.aves.utils.FileUtils.getFileSize
 import deckers.thibault.aves.utils.LogUtils
 import java.io.File
+import java.io.FileOutputStream
+import java.io.OutputStream
 
 internal class FileImageProvider : ImageProvider() {
     override fun fetchSingle(context: Context, uri: Uri, sourceMimeType: String?, allowUnsized: Boolean, callback: ImageOpCallback) {
@@ -88,7 +89,7 @@ internal class FileImageProvider : ImageProvider() {
     }
 
     override suspend fun renameSingle(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
@@ -122,5 +123,15 @@ internal class FileImageProvider : ImageProvider() {
 
     companion object {
         private val LOG_TAG = LogUtils.createTag<MediaStoreImageProvider>()
+
+        fun insert(
+            targetDir: String,
+            targetFileName: String,
+            write: (OutputStream) -> Unit,
+        ): String {
+            val file = File(targetDir, targetFileName)
+            FileOutputStream(file).use(write)
+            return file.path
+        }
     }
 }

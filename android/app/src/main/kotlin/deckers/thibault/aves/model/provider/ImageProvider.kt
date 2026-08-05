@@ -1,8 +1,6 @@
 package deckers.thibault.aves.model.provider
 
-import android.app.Activity
 import android.content.Context
-import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -37,8 +35,11 @@ import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.NameConflictResolution
 import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
-import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.PermissionManager
 import deckers.thibault.aves.storage.StorageUtils
+import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.StorageApi
 import deckers.thibault.aves.utils.BitmapUtils
 import deckers.thibault.aves.utils.BmpWriter
 import deckers.thibault.aves.utils.FileUtils.getFileSize
@@ -85,17 +86,123 @@ abstract class ImageProvider {
         }
     }
 
-    private fun deletePath(contextWrapper: ContextWrapper, path: String, mimeType: String) {
-        if (StorageUtils.isInVault(contextWrapper, path)) {
+    fun createSingle(
+        context: Context,
+        mimeType: String,
+        targetDir: String,
+        targetNameWithoutExtension: String,
+        defaultExtension: String?,
+        write: (OutputStream) -> Unit,
+    ): String {
+        val storageEditionApis = PermissionManager.getStorageEditionApis(
+            context = context,
+            dirPaths = listOf(ensureTrailingSeparator(targetDir)),
+            insertion = true,
+        )
+        storageEditionApis.values.firstOrNull()?.firstOrNull()?.let { api ->
+            when (api) {
+                StorageApi.FILE -> {
+                    return FileImageProvider.insert(
+                        targetDir = targetDir,
+                        targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                        write = write,
+                    )
+                }
+
+                StorageApi.MEDIA_STORE -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        return MediaStoreImageProvider.insert(
+                            context = context,
+                            mimeType = mimeType,
+                            targetDir = targetDir,
+                            targetFileName = "$targetNameWithoutExtension${extensionFor(mimeType, defaultExtension)}",
+                            write = write,
+                        )
+                    }
+                }
+
+                StorageApi.SAF -> {
+                    return insertByTreeDoc(
+                        context = context,
+                        mimeType = mimeType,
+                        targetDir = targetDir,
+                        targetNameWithoutExtension = targetNameWithoutExtension,
+                        defaultExtension = defaultExtension,
+                        write = write,
+                    )
+                }
+            }
+        }
+
+        throw Exception("Failed to find storage API for insertion in targetDir=$targetDir")
+    }
+
+    // `DocumentsContract.moveDocument()` needs `sourceParentDocumentUri`, which could be different for each entry
+    // `DocumentsContract.copyDocument()` yields "Unsupported call: android:copyDocument"
+    // when used with entry URI as `sourceDocumentUri`, and targetDirDocFile URI as `targetParentDocumentUri`
+    private fun insertByTreeDoc(
+        context: Context,
+        mimeType: String,
+        targetDir: String,
+        targetNameWithoutExtension: String,
+        defaultExtension: String?,
+        write: (OutputStream) -> Unit,
+    ): String {
+        val targetDirDocFile = StorageUtils.createDirectoryDocIfAbsent(context, targetDir)
+        if (!File(targetDir).exists()) {
+            throw Exception("failed to create directory at path=$targetDir")
+        }
+        targetDirDocFile ?: throw Exception("failed to get tree doc for directory at path=$targetDir")
+
+        // the file created from a `TreeDocumentFile` is also a `TreeDocumentFile`
+        // but in order to open an output stream to it, we need to use a `SingleDocumentFile`
+        // through a document URI, not a tree URI
+        // note that `DocumentFile.getParentFile()` returns null if we did not pick a tree first
+        var targetTreeFile = targetDirDocFile.createFile(mimeType, targetNameWithoutExtension)
+        var targetDocFile = DocumentFileCompat.fromSingleUri(context, targetTreeFile.uri)
+
+        // providing a display name and a MIME type does not guarantee
+        // that the created document will be backed by a file with a valid media extension,
+        // but having an extension is essential for media detection by Android,
+        // so we retry with a display name that includes the extension
+        if ((targetDocFile.extension == null || targetDocFile.extension.isEmpty() || targetDocFile.extension == "bin") && defaultExtension != null) {
+            if (targetDocFile.exists()) {
+                targetDocFile.delete()
+            }
+
+            val extension = if (defaultExtension.startsWith(".")) defaultExtension else ".$defaultExtension"
+            targetTreeFile = targetDirDocFile.createFile(mimeType, "$targetNameWithoutExtension$extension")
+            targetDocFile = DocumentFileCompat.fromSingleUri(context, targetTreeFile.uri)
+        }
+
+        try {
+            targetDocFile.openOutputStream().use(write)
+        } catch (e: Exception) {
+            // remove empty file
+            if (targetDocFile.exists()) {
+                targetDocFile.delete()
+            }
+            throw e
+        }
+
+        // the source file name and the created document file name can be different when:
+        // - a file with the same name already exists, some implementations give a suffix like ` (1)`, some *do not*
+        // - the original extension does not match the extension added by the underlying provider
+        val fileName = targetDocFile.name
+        return targetDir + fileName
+    }
+
+    private fun deletePath(context: Context, path: String, mimeType: String) {
+        if (StorageUtils.isInVault(context, path)) {
             FileImageProvider().apply {
                 val uri = Uri.fromFile(File(path))
-                delete(contextWrapper, uri, path, mimeType)
+                delete(context, uri, path, mimeType)
             }
         } else {
             MediaStoreImageProvider().apply {
-                val uri = getContentUriForPath(contextWrapper, path)
+                val uri = getContentUriForPath(context, path)
                 uri ?: throw Exception("failed to find content URI for path=$path")
-                delete(contextWrapper, uri, path, mimeType)
+                delete(context, uri, path, mimeType)
             }
         }
     }
@@ -105,7 +212,7 @@ abstract class ImageProvider {
     }
 
     open suspend fun moveMultiple(
-        activity: Activity,
+        context: Context,
         copy: Boolean,
         nameConflictStrategy: NameConflictStrategy,
         entriesByTargetDir: Map<String, List<AvesEntry>>,
@@ -116,7 +223,7 @@ abstract class ImageProvider {
     }
 
     suspend fun renameMultiple(
-        activity: Activity,
+        context: Context,
         entriesToNewName: Map<AvesEntry, String>,
         isCancelledOp: CancelCheck,
         callback: ImageOpCallback,
@@ -145,7 +252,7 @@ abstract class ImageProvider {
                             val defaultExtension = oldFile.extension
                             oldFile.parent?.let { dir ->
                                 val resolution = resolveTargetFileNameWithoutExtension(
-                                    contextWrapper = activity,
+                                    context = context,
                                     dir = dir,
                                     desiredNameWithoutExtension = desiredNameWithoutExtension,
                                     mimeType = mimeType,
@@ -157,7 +264,7 @@ abstract class ImageProvider {
                                     val newFile = File(dir, targetFileName)
                                     if (oldFile != newFile) {
                                         newFields = renameSingle(
-                                            activity = activity,
+                                            context = context,
                                             mimeType = mimeType,
                                             oldMediaUri = sourceUri,
                                             oldPath = sourcePath,
@@ -179,7 +286,7 @@ abstract class ImageProvider {
     }
 
     open suspend fun renameSingle(
-        activity: Activity,
+        context: Context,
         mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
@@ -193,7 +300,7 @@ abstract class ImageProvider {
     }
 
     suspend fun convertMultiple(
-        activity: Activity,
+        context: Context,
         imageExportMimeType: String,
         targetDir: String,
         entries: List<AvesEntry>,
@@ -207,12 +314,6 @@ abstract class ImageProvider {
     ) {
         if (!supportedExportMimeTypes.contains(imageExportMimeType)) {
             callback.onFailure(Exception("unsupported export MIME type=$imageExportMimeType"))
-            return
-        }
-
-        val targetDirDocFile = StorageUtils.createDirectoryDocIfAbsent(activity, targetDir)
-        if (!File(targetDir).exists()) {
-            callback.onFailure(Exception("failed to create directory at path=$targetDir"))
             return
         }
 
@@ -231,10 +332,9 @@ abstract class ImageProvider {
             val exportMimeType = if (isVideo(sourceMimeType)) sourceMimeType else imageExportMimeType
             try {
                 val newFields = convertSingle(
-                    activity = activity,
+                    context = context,
                     sourceEntry = entry,
                     targetDir = targetDir,
-                    targetDirDocFile = targetDirDocFile,
                     quality = quality,
                     lengthUnit = lengthUnit,
                     width = width,
@@ -253,10 +353,9 @@ abstract class ImageProvider {
     }
 
     private suspend fun convertSingle(
-        activity: Activity,
+        context: Context,
         sourceEntry: AvesEntry,
         targetDir: String,
-        targetDirDocFile: DocumentFileCompat?,
         quality: Int,
         lengthUnit: String,
         width: Int,
@@ -285,7 +384,7 @@ abstract class ImageProvider {
         val defaultExtension = null
 
         val resolution = resolveTargetFileNameWithoutExtension(
-            contextWrapper = activity,
+            context = context,
             dir = targetDir,
             desiredNameWithoutExtension = desiredNameWithoutExtension,
             mimeType = exportMimeType,
@@ -304,7 +403,7 @@ abstract class ImageProvider {
             if (isVideo(sourceMimeType)) {
                 targetMimeType = sourceMimeType
                 write = { output ->
-                    val sourceDocFile = DocumentFileCompat.fromSingleUri(activity, sourceUri)
+                    val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
                     sourceDocFile.copyTo(output)
                 }
             } else {
@@ -328,15 +427,15 @@ abstract class ImageProvider {
                     targetWidthPx = targetHeightPx.also { targetHeightPx = targetWidthPx }
                 }
 
-                target = Glide.with(activity.applicationContext)
+                target = Glide.with(context.applicationContext)
                     .asBitmap()
                     .apply(AvesAppGlideModule.uncachedFullImageOptions)
-                    .load(AvesAppGlideModule.getModel(activity, sourceUri, sourceMimeType, pageId, sourceEntry.sizeBytes))
+                    .load(AvesAppGlideModule.getModel(context, sourceUri, sourceMimeType, pageId, sourceEntry.sizeBytes))
                     .submit(targetWidthPx, targetHeightPx)
 
                 var bitmap = withContext(Dispatchers.IO) { target.get() }
                 if (needRotationAfterGlide) {
-                    bitmap = BitmapUtils.applyExifOrientation(activity, bitmap, rotationDegrees, sourceEntry.isFlipped)
+                    bitmap = BitmapUtils.applyExifOrientation(context, bitmap, rotationDegrees, sourceEntry.isFlipped)
                 }
                 bitmap ?: throw Exception("failed to get image for mimeType=$sourceMimeType uri=$sourceUri page=$pageId")
 
@@ -366,21 +465,20 @@ abstract class ImageProvider {
                 }
             }
 
-            val targetPath = MediaStoreImageProvider().createSingle(
-                activity = activity,
+            val targetPath = createSingle(
+                context = context,
                 mimeType = targetMimeType,
                 targetDir = targetDir,
-                targetDirDocFile = targetDirDocFile,
                 targetNameWithoutExtension = targetNameWithoutExtension,
                 defaultExtension = defaultExtension,
                 write = write,
             )
 
-            val newFields = scanNewPath(activity, targetPath, exportMimeType)
+            val newFields = scanNewPath(context, targetPath, exportMimeType)
             val targetUri = (newFields[EntryFields.URI] as String).toUri()
             if (writeMetadata) {
                 copyMetadata(
-                    context = activity,
+                    context = context,
                     sourceMimeType = sourceMimeType,
                     sourceUri = sourceUri,
                     targetMimeType = targetMimeType,
@@ -392,7 +490,7 @@ abstract class ImageProvider {
             return newFields
         } finally {
             // clearing Glide target should happen after effectively writing the bitmap
-            Glide.with(activity.applicationContext).clear(target)
+            Glide.with(context.applicationContext).clear(target)
 
             resolution.replacementFile?.delete()
         }
@@ -453,7 +551,7 @@ abstract class ImageProvider {
     }
 
     suspend fun captureFrame(
-        contextWrapper: ContextWrapper,
+        context: Context,
         desiredNameWithoutExtension: String,
         exifFields: FieldMap,
         bytes: ByteArray,
@@ -461,26 +559,19 @@ abstract class ImageProvider {
         nameConflictStrategy: NameConflictStrategy,
         callback: ImageOpCallback,
     ) {
-        val targetDirDocFile = StorageUtils.createDirectoryDocIfAbsent(contextWrapper, targetDir)
-        if (!File(targetDir).exists()) {
-            callback.onFailure(Exception("failed to create directory at path=$targetDir"))
-            return
-        }
-
-        // TODO TLAD [storage] allow inserting by Media Store
-        if (targetDirDocFile == null) {
-            callback.onFailure(Exception("failed to get tree doc for directory at path=$targetDir"))
-            return
-        }
-
         val captureMimeType = MimeTypes.JPEG
+
+        // there is no benefit providing input extension
+        // for known output MIME type
+        val defaultExtension = null
+
         val resolution = try {
             resolveTargetFileNameWithoutExtension(
-                contextWrapper = contextWrapper,
+                context = context,
                 dir = targetDir,
                 desiredNameWithoutExtension = desiredNameWithoutExtension,
                 mimeType = captureMimeType,
-                defaultExtension = null,
+                defaultExtension = defaultExtension,
                 conflictStrategy = nameConflictStrategy,
             )
         } catch (e: Exception) {
@@ -495,20 +586,11 @@ abstract class ImageProvider {
             return
         }
 
-        // the file created from a `TreeDocumentFile` is also a `TreeDocumentFile`
-        // but in order to open an output stream to it, we need to use a `SingleDocumentFile`
-        // through a document URI, not a tree URI
-        // note that `DocumentFile.getParentFile()` returns null if we did not pick a tree first
-        val targetTreeFile = targetDirDocFile.createFile(captureMimeType, targetNameWithoutExtension)
-        val targetDocFile = DocumentFileCompat.fromSingleUri(contextWrapper, targetTreeFile.uri)
-
-        try {
+        val write: (OutputStream) -> Unit = { output ->
             if (exifFields.isEmpty()) {
-                targetDocFile.openOutputStream().use { output ->
-                    output.write(bytes)
-                }
+                output.write(bytes)
             } else {
-                val editableFile = withContext(Dispatchers.IO) { StorageUtils.createTempFile(contextWrapper) }.apply {
+                val editableFile = StorageUtils.createTempFile(context).apply {
                     transferFrom(ByteArrayInputStream(bytes), bytes.size.toLong())
                 }
 
@@ -554,13 +636,21 @@ abstract class ImageProvider {
                 exif.saveAttributes()
 
                 // copy the edited temporary file back to the original
-                DocumentFileCompat.fromFile(editableFile).copyTo(targetDocFile)
+                DocumentFileCompat.fromFile(editableFile).copyTo(output)
                 editableFile.delete()
             }
+        }
 
-            val fileName = targetDocFile.name
-            val targetFullPath = targetDir + fileName
-            val newFields = scanNewPath(contextWrapper, targetFullPath, captureMimeType)
+        try {
+            val targetPath = createSingle(
+                context = context,
+                mimeType = captureMimeType,
+                targetDir = targetDir,
+                targetNameWithoutExtension = targetNameWithoutExtension,
+                defaultExtension = defaultExtension,
+                write = write,
+            )
+            val newFields = scanNewPath(context, targetPath, captureMimeType)
             callback.onSuccess(newFields)
         } catch (e: Exception) {
             callback.onFailure(e)
@@ -583,7 +673,7 @@ abstract class ImageProvider {
 
     // returns available name to use, or `null` to skip it
     fun resolveTargetFileNameWithoutExtension(
-        contextWrapper: ContextWrapper,
+        context: Context,
         dir: String,
         desiredNameWithoutExtension: String,
         mimeType: String,
@@ -611,10 +701,10 @@ abstract class ImageProvider {
                 if (targetFile.exists()) {
                     // move replaced file to temp storage
                     // so that it can be used as a source for conversion or metadata copy
-                    replacementFile = StorageUtils.createTempFile(contextWrapper).apply {
+                    replacementFile = StorageUtils.createTempFile(context).apply {
                         targetFile.transferTo(outputStream())
                     }
-                    deletePath(contextWrapper, targetFile.path, mimeType)
+                    deletePath(context, targetFile.path, mimeType)
                 }
             }
 

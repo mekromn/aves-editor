@@ -1,6 +1,6 @@
 package deckers.thibault.aves.channel.calls
 
-import android.content.ContextWrapper
+import android.content.Context
 import android.util.Log
 import androidx.core.net.toUri
 import deckers.thibault.aves.channel.calls.Coresult.Companion.safe
@@ -19,7 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
-class MediaEditHandler(private val contextWrapper: ContextWrapper) : MethodCallHandler {
+class MediaEditHandler(private val context: Context) : MethodCallHandler {
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
@@ -55,14 +55,14 @@ class MediaEditHandler(private val contextWrapper: ContextWrapper) : MethodCallH
             return
         }
 
-        val provider = getProvider(contextWrapper, uri)
+        val provider = getProvider(context, uri)
         if (provider == null) {
             result.error("captureFrame-provider", "failed to find provider for uri=$uri", null)
             return
         }
 
         destinationDir = ensureTrailingSeparator(destinationDir)
-        provider.captureFrame(contextWrapper, desiredName, exifFields, bytes, destinationDir, nameConflictStrategy, object : ImageOpCallback {
+        provider.captureFrame(context, desiredName, exifFields, bytes, destinationDir, nameConflictStrategy, object : ImageOpCallback {
             override fun onSuccess(fields: FieldMap) = result.success(fields)
             override fun onFailure(throwable: Throwable) = result.error("captureFrame-failure", "failed to capture frame for uri=$uri", throwable.message)
         })

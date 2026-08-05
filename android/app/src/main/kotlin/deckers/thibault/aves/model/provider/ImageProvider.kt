@@ -61,6 +61,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.io.SyncFailedException
 import java.nio.channels.Channels
 import java.util.Date
 import java.util.TimeZone
@@ -82,7 +83,7 @@ abstract class ImageProvider {
                 EntryFields.PATH to path,
             )
         } else {
-            MediaStoreImageProvider().scanNewPathByMediaStore(context, path, mimeType)
+            MediaStoreImageProvider.scanNewPathByMediaStore(context, path, mimeType)
         }
     }
 
@@ -207,7 +208,7 @@ abstract class ImageProvider {
         throw UnsupportedOperationException("`delete` is not supported by this image provider")
     }
 
-    open suspend fun moveMultiple(
+    suspend fun moveMultiple(
         context: Context,
         copy: Boolean,
         nameConflictStrategy: NameConflictStrategy,
@@ -215,7 +216,207 @@ abstract class ImageProvider {
         isCancelledOp: CancelCheck,
         callback: ImageOpCallback,
     ) {
-        callback.onFailure(UnsupportedOperationException("`moveMultiple` is not supported by this image provider"))
+        entriesByTargetDir.forEach { kv ->
+            val targetDir = kv.key
+            val entries = kv.value
+
+            for (entry in entries) {
+                val mimeType = entry.mimeType
+                val trashed = entry.trashed
+
+                val sourceUri = entry.uri
+                val sourcePath = entry.storagePath
+
+                var desiredName: String? = null
+                if (trashed) {
+                    entry.path?.let { desiredName = File(it).name }
+                }
+
+                val result: FieldMap = hashMapOf(
+                    "uri" to sourceUri.toString(),
+                    "success" to false,
+                )
+
+                try {
+                    val newFields = if (isCancelledOp()) skippedFieldMap else {
+                        val toBin = targetDir == StorageUtils.TRASH_PATH_PLACEHOLDER
+
+                        val sourceFile = if (sourcePath != null) File(sourcePath) else null
+                        if (sourceFile != null && !sourceFile.exists() && toBin) {
+                            delete(context, sourceUri, sourcePath, mimeType = mimeType)
+                            deletedFieldMap
+                        } else {
+                            var effectiveTargetDirPath = targetDir
+                            if (toBin) {
+                                // trash directory should be on the same storage volume as the entry
+                                val trashDir = StorageUtils.trashDirFor(context, sourcePath ?: StorageUtils.getPrimaryVolumePath(context))
+                                if (trashDir == null) {
+                                    callback.onFailure(Exception("failed to find trash dir for path=$sourcePath"))
+                                    return
+                                }
+                                effectiveTargetDirPath = trashDir.path
+                            }
+                            effectiveTargetDirPath = ensureTrailingSeparator(effectiveTargetDirPath)
+
+                            moveSingle(
+                                context = context,
+                                sourceFile = sourceFile,
+                                sourceUri = sourceUri,
+                                targetDirPath = effectiveTargetDirPath,
+                                desiredName = desiredName ?: sourceFile?.name ?: sourceUri.lastPathSegment ?: createTimeStampFileName(),
+                                nameConflictStrategy = nameConflictStrategy,
+                                mimeType = mimeType,
+                                copy = copy,
+                                toBin = toBin,
+                            )
+                        }
+                    }
+                    result["newFields"] = newFields
+                    result["success"] = true
+                } catch (e: Exception) {
+                    Log.w(LOG_TAG, "failed to move to targetDir=$targetDir entry with sourcePath=$sourcePath", e)
+                }
+                callback.onSuccess(result)
+            }
+        }
+    }
+
+    // on API 30 we cannot get SAF access granted directly to a volume root from its document tree,
+    // but it is still less constraining to use tree document files than to rely on the Media Store
+    //
+    // Relying on `DocumentFile`, we can create an item via `DocumentFile.createFile()`, but:
+    // - we need to scan the file to get the Media Store content URI
+    // - the underlying document provider controls the new file name
+    //
+    // Relying on the Media Store, we can create an item via `ContentResolver.insert()`
+    // with a path, and retrieve its content URI, but:
+    // - the Media Store isolates content by storage volume (e.g. `MediaStore.Images.Media.getContentUri(volumeName)`)
+    // - the Media Store volume name is not the same as the `StorageVolume` UUID (cf `StorageVolume.getMediaStoreVolumeName()`)
+    // - inserting on a removable volume works on API 29, but not on older ones
+    // - there is no documentation regarding support for usage with removable storage
+    // - the Media Store only allows inserting in specific primary directories ("DCIM", "Pictures") when using scoped storage
+    private suspend fun moveSingle(
+        context: Context,
+        sourceFile: File?,
+        sourceUri: Uri,
+        targetDirPath: String,
+        desiredName: String,
+        nameConflictStrategy: NameConflictStrategy,
+        mimeType: String,
+        copy: Boolean,
+        toBin: Boolean,
+    ): FieldMap {
+        val sourcePath = sourceFile?.path
+        val sourceExtension = sourceFile?.extension
+        val sourceDirPath = sourceFile?.parent?.let { ensureTrailingSeparator(it) }
+        if (sourceDirPath == targetDirPath && !(copy && nameConflictStrategy == NameConflictStrategy.RENAME)) {
+            // nothing to do unless it's a renamed copy
+            return skippedFieldMap
+        }
+
+        if (sourceFile != null && !sourceFile.exists()) {
+            throw Exception("failed to move file because it is missing at path=$sourcePath")
+        }
+
+        val desiredNameWithoutExtension = desiredName.substringBeforeLast(".")
+        val resolution = resolveTargetFileNameWithoutExtension(
+            context = context,
+            dir = targetDirPath,
+            desiredNameWithoutExtension = desiredNameWithoutExtension,
+            mimeType = mimeType,
+            defaultExtension = sourceExtension,
+            conflictStrategy = nameConflictStrategy,
+        )
+        val targetNameWithoutExtension = resolution.nameWithoutExtension ?: return skippedFieldMap
+        val targetFile = File(targetDirPath, "$targetNameWithoutExtension.$sourceExtension")
+
+        var hybridMove = true
+        var targetPath: String? = null
+
+        if (sourceDirPath != null && !copy) {
+            val sourceEditionApi = PermissionManager.getStorageEditionApis(
+                context = context,
+                dirPaths = listOf(ensureTrailingSeparator(sourceDirPath)),
+                insertion = false,
+            ).values.firstOrNull()?.firstOrNull()
+                ?: throw Exception("failed to find API for edition in targetDir=$targetDirPath")
+
+            val targetEditionApi = PermissionManager.getStorageEditionApis(
+                context = context,
+                dirPaths = listOf(ensureTrailingSeparator(targetDirPath)),
+                insertion = true,
+            ).values.firstOrNull()?.firstOrNull()
+                ?: throw Exception("failed to find API for insertion in targetDir=$targetDirPath")
+
+            var canUseFileApi = sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.FILE
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // cf https://developer.android.com/training/data-storage/shared/media#direct-file-paths
+                if (setOf(StorageApi.FILE, StorageApi.MEDIA_STORE).containsAll(setOf(sourceEditionApi, targetEditionApi))) {
+                    // TODO TLAD check target directory (e.g. `Download` not allowed)
+                    canUseFileApi = true
+                }
+            }
+            if (canUseFileApi) {
+                hybridMove = false
+                targetPath = FileImageProvider.move(sourceFile, targetFile)
+            } else if (sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.MEDIA_STORE) {
+                hybridMove = false
+                targetPath = MediaStoreImageProvider.move(
+                    context = context,
+                    mimeType = mimeType,
+                    sourceFile = sourceFile,
+                    mediaUri = sourceUri,
+                    targetFile = targetFile,
+                )
+            }
+        }
+
+        if (hybridMove) {
+            val beforeCopy = System.nanoTime()
+            val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
+            targetPath = createSingle(
+                context = context,
+                mimeType = mimeType,
+                targetDir = targetDirPath,
+                targetNameWithoutExtension = targetNameWithoutExtension,
+                defaultExtension = sourceExtension,
+            ) { output: OutputStream ->
+                try {
+                    sourceDocFile.copyTo(output)
+                } catch (e: SyncFailedException) {
+                    // The copied file is synced after writing, but it consistently fails in some cases
+                    // (e.g. copying to SD card on Xiaomi 2201117PG with Android 11).
+                    // It seems this failure can be safely ignored, as the new file is complete.
+                    Log.w(LOG_TAG, "sync failure after copying from uri=$sourceUri, path=$sourcePath to targetDir=$targetDirPath", e)
+                }
+            }
+            val afterCopy = System.nanoTime()
+            Log.d(LOG_TAG, "TLAD copy=${(afterCopy - beforeCopy) / 1_000_000}ms")
+
+            if (!copy) {
+                // delete original entry
+                val beforeDelete = System.nanoTime()
+                try {
+                    delete(context, sourceUri, sourcePath, mimeType)
+                } catch (e: Exception) {
+                    Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
+                }
+                val afterDelete = System.nanoTime()
+                Log.d(LOG_TAG, "TLAD delete=${(afterDelete - beforeDelete) / 1_000_000}ms")
+            }
+        }
+
+        targetPath ?: throw Exception("failed to get target path")
+
+        return if (toBin) {
+            hashMapOf(
+                EntryFields.TRASHED to true,
+                EntryFields.TRASH_PATH to targetPath,
+            )
+        } else {
+            val fields = scanNewPath(context, targetPath, mimeType)
+            fields
+        }
     }
 
     suspend fun renameMultiple(

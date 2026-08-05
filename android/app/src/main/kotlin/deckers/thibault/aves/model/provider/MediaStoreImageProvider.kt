@@ -13,13 +13,10 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
-import com.commonsware.cwac.document.DocumentFileCompat
 import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.MainActivity.Companion.DELETE_SINGLE_PERMISSION_REQUEST
-import deckers.thibault.aves.model.AvesEntry
 import deckers.thibault.aves.model.EntryFields
 import deckers.thibault.aves.model.FieldMap
-import deckers.thibault.aves.model.NameConflictStrategy
 import deckers.thibault.aves.model.SourceEntry
 import deckers.thibault.aves.storage.PathSegments
 import deckers.thibault.aves.storage.StorageUtils
@@ -39,7 +36,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.File
 import java.io.IOException
 import java.io.OutputStream
-import java.io.SyncFailedException
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 import kotlin.coroutines.Continuation
@@ -329,23 +325,6 @@ class MediaStoreImageProvider : ImageProvider() {
         return found
     }
 
-    private fun hasEntry(context: Context, contentUri: Uri): Boolean {
-        var found = false
-        val projection = arrayOf(MediaStore.MediaColumns._ID)
-        try {
-            val cursor = context.contentResolver.query(contentUri, projection, null, null, null)
-            if (cursor != null) {
-                while (cursor.moveToNext()) {
-                    found = true
-                }
-                cursor.close()
-            }
-        } catch (e: Exception) {
-            Log.e(LOG_TAG, "failed to get entry at contentUri=$contentUri", e)
-        }
-        return found
-    }
-
     private fun needSize(mimeType: String) = MimeTypes.SVG != mimeType
 
     // returns whether file was successfully deleted
@@ -457,163 +436,6 @@ class MediaStoreImageProvider : ImageProvider() {
         deleteSingleByMediaStore(context = context, uri = uri, path = path, mimeType = mimeType)
     }
 
-    override suspend fun moveMultiple(
-        context: Context,
-        copy: Boolean,
-        nameConflictStrategy: NameConflictStrategy,
-        entriesByTargetDir: Map<String, List<AvesEntry>>,
-        isCancelledOp: CancelCheck,
-        callback: ImageOpCallback,
-    ) {
-        entriesByTargetDir.forEach { kv ->
-            val targetDir = kv.key
-            val entries = kv.value
-
-            for (entry in entries) {
-                val mimeType = entry.mimeType
-                val trashed = entry.trashed
-
-                val sourceUri = entry.uri
-                val sourcePath = entry.storagePath
-
-                var desiredName: String? = null
-                if (trashed) {
-                    entry.path?.let { desiredName = File(it).name }
-                }
-
-                val result: FieldMap = hashMapOf(
-                    "uri" to sourceUri.toString(),
-                    "success" to false,
-                )
-
-                try {
-                    val newFields = if (isCancelledOp()) skippedFieldMap else {
-                        val toBin = targetDir == StorageUtils.TRASH_PATH_PLACEHOLDER
-
-                        val sourceFile = if (sourcePath != null) File(sourcePath) else null
-                        if (sourceFile != null && !sourceFile.exists() && toBin) {
-                            delete(context, sourceUri, sourcePath, mimeType = mimeType)
-                            deletedFieldMap
-                        } else {
-                            var effectiveTargetDir = targetDir
-                            if (toBin) {
-                                // trash directory should be on the same storage volume as the entry
-                                val trashDir = StorageUtils.trashDirFor(context, sourcePath ?: StorageUtils.getPrimaryVolumePath(context))
-                                if (trashDir == null) {
-                                    callback.onFailure(Exception("failed to find trash dir for path=$sourcePath"))
-                                    return
-                                }
-                                effectiveTargetDir = trashDir.path
-                            }
-                            effectiveTargetDir = ensureTrailingSeparator(effectiveTargetDir)
-
-                            moveSingle(
-                                context = context,
-                                sourceFile = sourceFile,
-                                sourceUri = sourceUri,
-                                targetDir = effectiveTargetDir,
-                                desiredName = desiredName ?: sourceFile?.name ?: sourceUri.lastPathSegment ?: createTimeStampFileName(),
-                                nameConflictStrategy = nameConflictStrategy,
-                                mimeType = mimeType,
-                                copy = copy,
-                                toBin = toBin,
-                            )
-                        }
-                    }
-                    result["newFields"] = newFields
-                    result["success"] = true
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "failed to move to targetDir=$targetDir entry with sourcePath=$sourcePath", e)
-                }
-                callback.onSuccess(result)
-            }
-        }
-    }
-
-    // on API 30 we cannot get SAF access granted directly to a volume root from its document tree,
-    // but it is still less constraining to use tree document files than to rely on the Media Store
-    //
-    // Relying on `DocumentFile`, we can create an item via `DocumentFile.createFile()`, but:
-    // - we need to scan the file to get the Media Store content URI
-    // - the underlying document provider controls the new file name
-    //
-    // Relying on the Media Store, we can create an item via `ContentResolver.insert()`
-    // with a path, and retrieve its content URI, but:
-    // - the Media Store isolates content by storage volume (e.g. `MediaStore.Images.Media.getContentUri(volumeName)`)
-    // - the Media Store volume name is not the same as the `StorageVolume` UUID (cf `StorageVolume.getMediaStoreVolumeName()`)
-    // - inserting on a removable volume works on API 29, but not on older ones
-    // - there is no documentation regarding support for usage with removable storage
-    // - the Media Store only allows inserting in specific primary directories ("DCIM", "Pictures") when using scoped storage
-    private suspend fun moveSingle(
-        context: Context,
-        sourceFile: File?,
-        sourceUri: Uri,
-        targetDir: String,
-        desiredName: String,
-        nameConflictStrategy: NameConflictStrategy,
-        mimeType: String,
-        copy: Boolean,
-        toBin: Boolean,
-    ): FieldMap {
-        val sourcePath = sourceFile?.path
-        val sourceExtension = sourceFile?.extension
-        val sourceDir = sourceFile?.parent?.let { ensureTrailingSeparator(it) }
-        if (sourceDir == targetDir && !(copy && nameConflictStrategy == NameConflictStrategy.RENAME)) {
-            // nothing to do unless it's a renamed copy
-            return skippedFieldMap
-        }
-
-        if (sourceFile != null && !sourceFile.exists()) {
-            throw Exception("failed to move file because it is missing at path=$sourcePath")
-        }
-
-        val desiredNameWithoutExtension = desiredName.substringBeforeLast(".")
-        val resolution = resolveTargetFileNameWithoutExtension(
-            context = context,
-            dir = targetDir,
-            desiredNameWithoutExtension = desiredNameWithoutExtension,
-            mimeType = mimeType,
-            defaultExtension = sourceExtension,
-            conflictStrategy = nameConflictStrategy,
-        )
-        val targetNameWithoutExtension = resolution.nameWithoutExtension ?: return skippedFieldMap
-
-        val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
-        val targetPath = createSingle(
-            context = context,
-            mimeType = mimeType,
-            targetDir = targetDir,
-            targetNameWithoutExtension = targetNameWithoutExtension,
-            defaultExtension = sourceExtension,
-        ) { output: OutputStream ->
-            try {
-                sourceDocFile.copyTo(output)
-            } catch (e: SyncFailedException) {
-                // The copied file is synced after writing, but it consistently fails in some cases
-                // (e.g. copying to SD card on Xiaomi 2201117PG with Android 11).
-                // It seems this failure can be safely ignored, as the new file is complete.
-                Log.w(LOG_TAG, "sync failure after copying from uri=$sourceUri, path=$sourcePath to targetDir=$targetDir", e)
-            }
-        }
-
-        if (!copy) {
-            // delete original entry
-            try {
-                delete(context, sourceUri, sourcePath, mimeType)
-            } catch (e: Exception) {
-                Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
-            }
-        }
-        return if (toBin) {
-            hashMapOf(
-                EntryFields.TRASHED to true,
-                EntryFields.TRASH_PATH to targetPath,
-            )
-        } else {
-            scanNewPath(context, targetPath, mimeType)
-        }
-    }
-
     override suspend fun renameSingle(
         context: Context,
         mimeType: String,
@@ -621,53 +443,29 @@ class MediaStoreImageProvider : ImageProvider() {
         oldPath: String,
         newFile: File,
     ): FieldMap = when {
-        FilePermissions.canEdit(context, oldPath) -> renameSingleByFile(context, mimeType, oldMediaUri, oldPath, newFile)
-        MediaStorePermissions.canEdit(context, oldMediaUri, mimeType) -> renameSingleByMediaStore(context, mimeType, oldMediaUri, newFile)
-        else -> renameSingleByTreeDoc(context, mimeType, oldMediaUri, oldPath, newFile)
+        FilePermissions.canEdit(context, oldPath) -> {
+            val newPath = FileImageProvider.rename(oldPath, newFile)
+            scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
+            return scanNewPathByMediaStore(context, newPath, mimeType)
+        }
+
+        MediaStorePermissions.canEdit(context, oldMediaUri, mimeType) -> {
+            return MediaStoreImageProvider.rename(context, mimeType, oldMediaUri, newFile)
+        }
+
+        else -> {
+            val newPath = renameSingleByTreeDoc(context, oldMediaUri, oldPath, newFile)
+            scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
+            return scanNewPathByMediaStore(context, newPath, mimeType)
+        }
     }
 
-    private suspend fun renameSingleByMediaStore(
+    private fun renameSingleByTreeDoc(
         context: Context,
-        mimeType: String,
-        mediaUri: Uri,
-        newFile: File
-    ): FieldMap {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            throw Exception("unsupported Android version")
-        }
-
-        Log.d(LOG_TAG, "rename content at uri=$mediaUri")
-        val uri = StorageUtils.getMediaStoreScopedStorageSafeUri(mediaUri, mimeType)
-
-        // `IS_PENDING` is necessary for `TITLE`, not for `DISPLAY_NAME`
-        val tempValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.IS_PENDING, 1)
-        }
-        if (context.contentResolver.update(uri, tempValues, null, null) == 0) {
-            throw Exception("failed to update fields for uri=$uri")
-        }
-
-        val finalValues = ContentValues().apply {
-            put(MediaStore.MediaColumns.DISPLAY_NAME, newFile.name)
-            // scanning the new file will not automatically update `TITLE`
-            put(MediaStore.MediaColumns.TITLE, newFile.nameWithoutExtension)
-            put(MediaStore.MediaColumns.IS_PENDING, 0)
-        }
-        if (context.contentResolver.update(uri, finalValues, null, null) == 0) {
-            throw Exception("failed to update fields for uri=$uri")
-        }
-
-        // URI should not change
-        return scanNewPathByMediaStore(context, newFile.path, mimeType)
-    }
-
-    private suspend fun renameSingleByTreeDoc(
-        context: Context,
-        mimeType: String,
         oldMediaUri: Uri,
         oldPath: String,
         newFile: File
-    ): FieldMap {
+    ): String {
         Log.d(LOG_TAG, "rename document at uri=$oldMediaUri path=$oldPath")
         val df = StorageUtils.getDocumentFile(context, oldPath, oldMediaUri)
         df ?: throw Exception("failed to get document at path=$oldPath")
@@ -682,25 +480,7 @@ class MediaStoreImageProvider : ImageProvider() {
             Log.w(LOG_TAG, "requested renaming document at uri=$oldMediaUri path=$oldPath with name=${requestedName} but got name=$effectiveName")
         }
         val newPath = File(newFile.parentFile, df.name).path
-
-        scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
-        return scanNewPathByMediaStore(context, newPath, mimeType)
-    }
-
-    private suspend fun renameSingleByFile(
-        context: Context,
-        mimeType: String,
-        oldMediaUri: Uri,
-        oldPath: String,
-        newFile: File
-    ): FieldMap {
-        Log.d(LOG_TAG, "rename file at path=$oldPath")
-        val renamed = File(oldPath).renameTo(newFile)
-        if (!renamed) {
-            throw Exception("failed to rename file at path=$oldPath")
-        }
-        scanObsoletePath(context, oldMediaUri, oldPath, mimeType)
-        return scanNewPathByMediaStore(context, newFile.path, mimeType)
+        return newPath
     }
 
     override fun scanPostMetadataEdit(context: Context, path: String, uri: Uri, mimeType: String, newFields: FieldMap, callback: ImageOpCallback) {
@@ -722,139 +502,6 @@ class MediaStoreImageProvider : ImageProvider() {
             }
             getFileModifiedDateMillis(path)?.let { newFields[EntryFields.DATE_MODIFIED_MILLIS] = it }
             callback.onSuccess(newFields)
-        }
-    }
-
-    // try to fetch the modified date from the file,
-    // as it is more precise than the one from the Media Store
-    private fun getFileModifiedDateMillis(path: String?): Long? {
-        if (path != null) {
-            try {
-                return File(path).lastModified()
-            } catch (_: SecurityException) {
-                // ignore
-            }
-        }
-        return null
-    }
-
-    private fun scanObsoletePath(context: Context, uri: Uri, path: String, mimeType: String) {
-        val file = File(path)
-        val delayMillis = 500L
-        val maxDelayMillis = 10000L
-        var totalDelayMillis = 0L
-        while (file.exists()) {
-            if (!hasEntry(context, uri)) return
-            if (totalDelayMillis < maxDelayMillis) {
-                Log.d(LOG_TAG, "Trying to scan obsolete path but file exists at path=$path. Will retry in $delayMillis ms (total: $totalDelayMillis ms)")
-                runBlocking { delay(delayMillis.milliseconds) }
-                totalDelayMillis += delayMillis
-            } else {
-                throw Exception("timeout ($maxDelayMillis ms) to clear MediaStore entry for file at path=$path")
-            }
-        }
-
-        if (hasEntry(context, uri)) {
-            MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mimeType)) { _, newUri: Uri? ->
-                if (newUri != null && hasEntry(context, newUri)) {
-                    Log.w(LOG_TAG, "Failed to clear Media Store entry at uri=$newUri path=$path")
-                } else {
-                    Log.w(LOG_TAG, "Cleared Media Store entry at uri=$newUri path=$path")
-                }
-            }
-        }
-    }
-
-    suspend fun scanNewPathByMediaStore(context: Context, path: String, mimeType: String): FieldMap =
-        suspendCancellableCoroutine { cont ->
-            tryScanNewPathByMediaStore(
-                context = context,
-                path = path,
-                mimeType = mimeType,
-                cont = cont,
-            )
-        }
-
-    private fun tryScanNewPathByMediaStore(
-        context: Context,
-        path: String,
-        mimeType: String,
-        cont: Continuation<FieldMap>,
-        iteration: Int = 0,
-    ) {
-        // `scanFile` may (e.g. when copying to SD card on Android 10 (API 29)):
-        // 1) yield no URI,
-        // 2) yield a temporary URI that fails when queried,
-        // 3) yield a temporary URI that succeeds when queried right away, but the Media Store actually won't have an entry for it until device reboot.
-        if (iteration > 5) {
-            // give up
-            cont.resumeWithException(Exception("failed to scan new path=$path after $iteration iterations"))
-            return
-        } else if (iteration > 0) {
-            // waiting and retrying just once usually works out for cases 1) and 2)
-            Thread.sleep(iteration * 100L)
-        } else if (iteration == 0 && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // waiting before the first scan usually works out for case 3)
-            StorageUtils.getVolumePath(context, path)?.let { volumePath ->
-                if (volumePath != StorageUtils.getPrimaryVolumePath(context)) {
-                    Thread.sleep(100L)
-                }
-            }
-        }
-
-        MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mimeType)) { _, newUri: Uri? ->
-            fun scanUri(uri: Uri?): FieldMap? {
-                uri ?: return null
-
-                // we retrieve updated fields as the renamed/moved file became a new entry in the Media Store
-                val projection = arrayOf(
-                    MediaStore.MediaColumns.DATE_ADDED,
-                    MediaStore.MediaColumns.DATE_MODIFIED,
-                )
-                try {
-                    val cursor = context.contentResolver.query(uri, projection, null, null, null)
-                    if (cursor != null && cursor.moveToFirst()) {
-                        val newFields = hashMapOf<String, Any?>(
-                            EntryFields.ORIGIN to SourceEntry.ORIGIN_MEDIA_STORE_CONTENT,
-                            EntryFields.URI to uri.toString(),
-                            EntryFields.CONTENT_ID to uri.tryParseId(),
-                            EntryFields.PATH to path,
-                        )
-                        cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED).let { if (it != -1) newFields[EntryFields.DATE_ADDED_SECS] = cursor.getInt(it) }
-                        cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED).let { if (it != -1) newFields[EntryFields.DATE_MODIFIED_MILLIS] = cursor.getInt(it) * 1000 }
-                        cursor.close()
-                        getFileModifiedDateMillis(path)?.let { newFields[EntryFields.DATE_MODIFIED_MILLIS] = it }
-                        return newFields
-                    }
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "failed to scan uri=$uri", e)
-                }
-                return null
-            }
-
-            if (newUri != null) {
-                var contentUri: Uri? = null
-                // `newURI` is possibly a file media URI (e.g. "content://media/12a9-8b42/file/62872")
-                // but we need an image/video media URI (e.g. "content://media/external/images/media/62872")
-                val contentId = newUri.tryParseId()
-                if (contentId != null) {
-                    if (isImage(mimeType)) {
-                        contentUri = ContentUris.withAppendedId(IMAGE_CONTENT_URI, contentId)
-                    } else if (isVideo(mimeType)) {
-                        contentUri = ContentUris.withAppendedId(VIDEO_CONTENT_URI, contentId)
-                    }
-                }
-
-                // prefer image/video content URI, fallback to original URI (possibly a file content URI)
-                val newFields = scanUri(contentUri) ?: scanUri(newUri)
-
-                if (newFields != null) {
-                    cont.resume(newFields)
-                    return@scanFile
-                }
-            }
-
-            tryScanNewPathByMediaStore(context, path = path, mimeType = mimeType, cont, iteration + 1)
         }
     }
 
@@ -915,6 +562,156 @@ class MediaStoreImageProvider : ImageProvider() {
             ) else emptyArray()
         )
 
+        private fun hasEntry(context: Context, contentUri: Uri): Boolean {
+            var found = false
+            val projection = arrayOf(MediaStore.MediaColumns._ID)
+            try {
+                val cursor = context.contentResolver.query(contentUri, projection, null, null, null)
+                if (cursor != null) {
+                    while (cursor.moveToNext()) {
+                        found = true
+                    }
+                    cursor.close()
+                }
+            } catch (e: Exception) {
+                Log.e(LOG_TAG, "failed to get entry at contentUri=$contentUri", e)
+            }
+            return found
+        }
+
+        // try to fetch the modified date from the file,
+        // as it is more precise than the one from the Media Store
+        private fun getFileModifiedDateMillis(path: String?): Long? {
+            if (path != null) {
+                try {
+                    return File(path).lastModified()
+                } catch (_: SecurityException) {
+                    // ignore
+                }
+            }
+            return null
+        }
+
+        private fun scanObsoletePath(context: Context, uri: Uri, path: String, mimeType: String) {
+            val file = File(path)
+            val delayMillis = 500L
+            val maxDelayMillis = 10000L
+            var totalDelayMillis = 0L
+            while (file.exists()) {
+                if (!hasEntry(context, uri)) return
+                if (totalDelayMillis < maxDelayMillis) {
+                    Log.d(LOG_TAG, "Trying to scan obsolete path but file exists at path=$path. Will retry in $delayMillis ms (total: $totalDelayMillis ms)")
+                    runBlocking { delay(delayMillis.milliseconds) }
+                    totalDelayMillis += delayMillis
+                } else {
+                    throw Exception("timeout ($maxDelayMillis ms) to clear MediaStore entry for file at path=$path")
+                }
+            }
+
+            if (hasEntry(context, uri)) {
+                MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mimeType)) { _, newUri: Uri? ->
+                    if (newUri != null && hasEntry(context, newUri)) {
+                        Log.w(LOG_TAG, "Failed to clear Media Store entry at uri=$newUri path=$path")
+                    } else {
+                        Log.w(LOG_TAG, "Cleared Media Store entry at uri=$newUri path=$path")
+                    }
+                }
+            }
+        }
+
+        suspend fun scanNewPathByMediaStore(context: Context, path: String, mimeType: String): FieldMap =
+            suspendCancellableCoroutine { cont ->
+                tryScanNewPathByMediaStore(
+                    context = context,
+                    path = path,
+                    mimeType = mimeType,
+                    cont = cont,
+                )
+            }
+
+        private fun tryScanNewPathByMediaStore(
+            context: Context,
+            path: String,
+            mimeType: String,
+            cont: Continuation<FieldMap>,
+            iteration: Int = 0,
+        ) {
+            // `scanFile` may (e.g. when copying to SD card on Android 10 (API 29)):
+            // 1) yield no URI,
+            // 2) yield a temporary URI that fails when queried,
+            // 3) yield a temporary URI that succeeds when queried right away, but the Media Store actually won't have an entry for it until device reboot.
+            if (iteration > 5) {
+                // give up
+                cont.resumeWithException(Exception("failed to scan new path=$path after $iteration iterations"))
+                return
+            } else if (iteration > 0) {
+                // waiting and retrying just once usually works out for cases 1) and 2)
+                Thread.sleep(iteration * 100L)
+            } else if (iteration == 0 && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+                // waiting before the first scan usually works out for case 3)
+                StorageUtils.getVolumePath(context, path)?.let { volumePath ->
+                    if (volumePath != StorageUtils.getPrimaryVolumePath(context)) {
+                        Thread.sleep(100L)
+                    }
+                }
+            }
+
+            MediaScannerConnection.scanFile(context, arrayOf(path), arrayOf(mimeType)) { _, newUri: Uri? ->
+                fun scanUri(uri: Uri?): FieldMap? {
+                    uri ?: return null
+
+                    // we retrieve updated fields as the renamed/moved file became a new entry in the Media Store
+                    val projection = arrayOf(
+                        MediaStore.MediaColumns.DATE_ADDED,
+                        MediaStore.MediaColumns.DATE_MODIFIED,
+                    )
+                    try {
+                        val cursor = context.contentResolver.query(uri, projection, null, null, null)
+                        if (cursor != null && cursor.moveToFirst()) {
+                            val newFields = hashMapOf<String, Any?>(
+                                EntryFields.ORIGIN to SourceEntry.ORIGIN_MEDIA_STORE_CONTENT,
+                                EntryFields.URI to uri.toString(),
+                                EntryFields.CONTENT_ID to uri.tryParseId(),
+                                EntryFields.PATH to path,
+                            )
+                            cursor.getColumnIndex(MediaStore.MediaColumns.DATE_ADDED).let { if (it != -1) newFields[EntryFields.DATE_ADDED_SECS] = cursor.getInt(it) }
+                            cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED).let { if (it != -1) newFields[EntryFields.DATE_MODIFIED_MILLIS] = cursor.getInt(it) * 1000 }
+                            cursor.close()
+                            getFileModifiedDateMillis(path)?.let { newFields[EntryFields.DATE_MODIFIED_MILLIS] = it }
+                            return newFields
+                        }
+                    } catch (e: Exception) {
+                        Log.w(LOG_TAG, "failed to scan uri=$uri", e)
+                    }
+                    return null
+                }
+
+                if (newUri != null) {
+                    var contentUri: Uri? = null
+                    // `newURI` is possibly a file media URI (e.g. "content://media/12a9-8b42/file/62872")
+                    // but we need an image/video media URI (e.g. "content://media/external/images/media/62872")
+                    val contentId = newUri.tryParseId()
+                    if (contentId != null) {
+                        if (isImage(mimeType)) {
+                            contentUri = ContentUris.withAppendedId(IMAGE_CONTENT_URI, contentId)
+                        } else if (isVideo(mimeType)) {
+                            contentUri = ContentUris.withAppendedId(VIDEO_CONTENT_URI, contentId)
+                        }
+                    }
+
+                    // prefer image/video content URI, fallback to original URI (possibly a file content URI)
+                    val newFields = scanUri(contentUri) ?: scanUri(newUri)
+
+                    if (newFields != null) {
+                        cont.resume(newFields)
+                        return@scanFile
+                    }
+                }
+
+                tryScanNewPathByMediaStore(context, path = path, mimeType = mimeType, cont, iteration + 1)
+            }
+        }
+
         fun insert(
             context: Context,
             mimeType: String,
@@ -947,6 +744,71 @@ class MediaStoreImageProvider : ImageProvider() {
             resolver.update(uri, values, null, null)
 
             return File(targetDir, targetFileName).path
+        }
+
+        suspend fun rename(
+            context: Context,
+            mimeType: String,
+            mediaUri: Uri,
+            newFile: File
+        ): FieldMap {
+            Log.d(LOG_TAG, "rename content at uri=$mediaUri")
+            val uri = StorageUtils.getMediaStoreScopedStorageSafeUri(mediaUri, mimeType)
+
+            // `IS_PENDING` is necessary for `TITLE`, not for `DISPLAY_NAME`
+            val tempValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            if (context.contentResolver.update(uri, tempValues, null, null) == 0) {
+                throw Exception("failed to update fields for uri=$uri")
+            }
+
+            val finalValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, newFile.name)
+                // scanning the new file will not automatically update `TITLE`
+                put(MediaStore.MediaColumns.TITLE, newFile.nameWithoutExtension)
+                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            }
+            if (context.contentResolver.update(uri, finalValues, null, null) == 0) {
+                throw Exception("failed to update fields for uri=$uri")
+            }
+
+            // URI should not change
+            return scanNewPathByMediaStore(context, newFile.path, mimeType)
+        }
+
+        fun move(
+            context: Context,
+            mimeType: String,
+            mediaUri: Uri,
+            sourceFile: File,
+            targetFile: File,
+        ): String? {
+            Log.d(LOG_TAG, "move content at uri=$mediaUri")
+            val beforeMove = System.nanoTime()
+
+            val uri = StorageUtils.getMediaStoreScopedStorageSafeUri(mediaUri, mimeType)
+
+            val sourceSegments = PathSegments(context, sourceFile.path)
+            val targetSegments = PathSegments(context, targetFile.path)
+
+            val sourceVolume = sourceSegments.volumePath
+            val targetVolume = targetSegments.volumePath
+            if (sourceVolume != targetVolume) {
+                throw Exception("moving from volume $sourceVolume to $targetVolume is not possible via Media Store API")
+            }
+
+            val finalValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, targetFile.name)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, targetSegments.relativeDir)
+            }
+            if (context.contentResolver.update(uri, finalValues, null, null) == 0) {
+                throw Exception("failed to update fields for uri=$uri")
+            }
+            val afterMove = System.nanoTime()
+            Log.d(LOG_TAG, "TLAD move=${(afterMove - beforeMove) / 1_000_000}ms")
+
+            return targetFile.path
         }
     }
 }

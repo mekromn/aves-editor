@@ -784,8 +784,7 @@ class MediaStoreImageProvider : ImageProvider() {
             sourceFile: File,
             targetFile: File,
         ): String? {
-            Log.d(LOG_TAG, "move content at uri=$mediaUri")
-            val beforeMove = System.nanoTime()
+            Log.d(LOG_TAG, "TLAD move content at uri=$mediaUri")
 
             val uri = StorageUtils.getMediaStoreScopedStorageSafeUri(mediaUri, mimeType)
 
@@ -805,8 +804,6 @@ class MediaStoreImageProvider : ImageProvider() {
             if (context.contentResolver.update(uri, finalValues, null, null) == 0) {
                 throw Exception("failed to update fields for uri=$uri")
             }
-            val afterMove = System.nanoTime()
-            Log.d(LOG_TAG, "TLAD move=${(afterMove - beforeMove) / 1_000_000}ms")
 
             return targetFile.path
         }

@@ -16,17 +16,28 @@ import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.storage.PathSegments
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.utils.LogUtils
-import java.io.File
+import deckers.thibault.aves.utils.MimeTypes
 import java.util.Locale
 import java.util.concurrent.CompletableFuture
 
 object MediaStorePermissions : StoragePermissions {
     private val LOG_TAG = LogUtils.createTag<MediaStorePermissions>()
-    private val MEDIA_STORE_INSERTION_PRIMARY_DIRS = listOf(
+    private val INSERTION_PRIMARY_DIRS_LOWER = listOf(
         Environment.DIRECTORY_DCIM,
         Environment.DIRECTORY_DOWNLOADS,
         Environment.DIRECTORY_PICTURES,
-    )
+    ).map { it.lowercase(Locale.ROOT) }.toList()
+
+    private val IMAGES_PRIMARY_DIRS_LOWER = listOf(
+        Environment.DIRECTORY_DCIM,
+        Environment.DIRECTORY_PICTURES,
+    ).map { it.lowercase(Locale.ROOT) }.toList()
+
+    private val VIDEOS_PRIMARY_DIRS_LOWER = listOf(
+        Environment.DIRECTORY_DCIM,
+        Environment.DIRECTORY_MOVIES,
+        Environment.DIRECTORY_PICTURES,
+    ).map { it.lowercase(Locale.ROOT) }.toList()
 
     fun canRequestBulkAccess(): Boolean {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -90,15 +101,24 @@ object MediaStorePermissions : StoragePermissions {
         }
     }
 
+    fun canMoveToPath(context: Context, mimeType: String, targetDirPath: String): Boolean {
+        val primaryDir = PathSegments(context, targetDirPath).getPrimaryDir()?.lowercase(Locale.ROOT)
+        return if (MimeTypes.isImage(mimeType)) {
+            IMAGES_PRIMARY_DIRS_LOWER.contains(primaryDir)
+        } else if (MimeTypes.isVideo(mimeType)) {
+            VIDEOS_PRIMARY_DIRS_LOWER.contains(primaryDir)
+        } else {
+            false
+        }
+    }
+
     override fun canEditWithUserInteraction(context: Context, dirPath: String, insertion: Boolean): Boolean {
         if (!canRequestBulkAccess()) return false
         if (StorageUtils.isInAppStorage(context, dirPath)) return false
         if (insertion) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val insertionDirsLower = MEDIA_STORE_INSERTION_PRIMARY_DIRS.map { it.lowercase(Locale.ROOT) }
-                val relativeDir = PathSegments(context, dirPath).relativeDir
-                val primaryDir = relativeDir?.split(File.separator)?.firstOrNull()
-                return primaryDir != null && insertionDirsLower.contains(primaryDir.lowercase(Locale.ROOT))
+                val primaryDirLower = PathSegments(context, dirPath).getPrimaryDir()?.lowercase(Locale.ROOT)
+                return INSERTION_PRIMARY_DIRS_LOWER.contains(primaryDirLower)
             }
         }
         return true

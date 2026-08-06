@@ -11,10 +11,10 @@ import deckers.thibault.aves.MainActivity
 import deckers.thibault.aves.PendingStorageAccessResultHandler
 import deckers.thibault.aves.channel.calls.AppAdapterHandler
 import deckers.thibault.aves.channel.streams.BaseStreamHandler
-import deckers.thibault.aves.storage.apis.MediaStorePermissions
-import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
+import deckers.thibault.aves.storage.apis.MediaStorePermissions
+import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
 import deckers.thibault.aves.utils.anyCauseIs
@@ -222,14 +222,10 @@ class ActivityResultStreamHandler(private val activity: Activity, arguments: Any
         fun onGranted(uri: Uri) {
             ioScope.launch {
                 try {
-                    StorageUtils.openInputStream(activity, sourceUri)?.use { input ->
-                        // truncate is necessary when overwriting a longer file
-                        activity.contentResolver.openOutputStream(uri, "wt")?.use { output ->
-                            val buffer = ByteArray(BUFFER_SIZE)
-                            var len: Int
-                            while (input.read(buffer).also { len = it } != -1) {
-                                output.write(buffer, 0, len)
-                            }
+                    // truncate is necessary when overwriting a longer file
+                    activity.contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                        StorageUtils.openInputStream(activity, sourceUri)?.use { input ->
+                            input.copyTo(output)
                         }
                     }
                     success(true)

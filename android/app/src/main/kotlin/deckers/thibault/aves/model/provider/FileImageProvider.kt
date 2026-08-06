@@ -2,19 +2,17 @@ package deckers.thibault.aves.model.provider
 
 import android.content.Context
 import android.net.Uri
-import android.os.Build
 import android.util.Log
 import android.webkit.MimeTypeMap
 import deckers.thibault.aves.model.EntryFields
 import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.model.SourceEntry
+import deckers.thibault.aves.utils.FileUtils
 import deckers.thibault.aves.utils.FileUtils.getFileSize
 import deckers.thibault.aves.utils.LogUtils
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
-import java.nio.file.Files
-import java.nio.file.Paths
 
 internal class FileImageProvider : ImageProvider() {
     override fun fetchSingle(context: Context, uri: Uri, sourceMimeType: String?, allowUnsized: Boolean, callback: ImageOpCallback) {
@@ -158,28 +156,25 @@ internal class FileImageProvider : ImageProvider() {
         fun move(
             sourceFile: File,
             targetFile: File,
+            copy: Boolean,
         ): String {
-            Log.d(LOG_TAG, "move file at path=${sourceFile.path}")
-            val beforeMove = System.nanoTime()
+            Log.d(LOG_TAG, "TLAD move file from path=$sourceFile to path=$targetFile")
+
+            if (targetFile.exists()) {
+                throw Exception("failed to move file because target file exists at path=$targetFile")
+            }
 
             val targetDir = targetFile.parentFile
             targetDir?.mkdirs()
             if (targetDir == null || !targetDir.exists()) {
-                throw Exception("failed to create parent directory of file at path=${targetFile.path}")
+                throw Exception("failed to create parent directory of file at path=$targetFile")
             }
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                // `StandardCopyOption.ATOMIC_MOVE` only works on the same storage volume
-                Files.move(
-                    Paths.get(sourceFile.absolutePath),
-                    Paths.get(targetFile.absolutePath),
-                )
+            if (copy) {
+                FileUtils.copy(sourceFile, targetFile)
             } else {
-                // only works on the same storage volume
-                sourceFile.renameTo(targetFile)
+                FileUtils.move(sourceFile, targetFile)
             }
-            val afterMove = System.nanoTime()
-            Log.d(LOG_TAG, "TLAD move=${(afterMove - beforeMove) / 1_000_000}ms")
             return targetFile.path
         }
     }

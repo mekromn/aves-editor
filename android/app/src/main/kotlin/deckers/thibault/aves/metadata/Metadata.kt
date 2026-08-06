@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import deckers.thibault.aves.storage.StorageUtils
-import deckers.thibault.aves.utils.FileUtils.transferFrom
+import deckers.thibault.aves.utils.FileUtils.copyFrom
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
 import java.io.File
@@ -175,7 +175,7 @@ object Metadata {
         val size = PREVIEW_SIZE
         Log.d(LOG_TAG, "create preview of size=$size for uri=$uri")
         return StorageUtils.createTempFile(context).apply {
-            transferFrom(StorageUtils.openInputStream(context, uri), size)
+            copyFrom(StorageUtils.openInputStream(context, uri), size)
         }
     }
 

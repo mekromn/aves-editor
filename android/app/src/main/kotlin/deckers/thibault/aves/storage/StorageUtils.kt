@@ -21,7 +21,7 @@ import com.commonsware.cwac.document.DocumentFileCompat
 import deckers.thibault.aves.storage.apis.FilePermissions
 import deckers.thibault.aves.storage.apis.MediaStorePermissions
 import deckers.thibault.aves.storage.apis.SafPermissions
-import deckers.thibault.aves.utils.FileUtils.transferFrom
+import deckers.thibault.aves.utils.FileUtils.copyFrom
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes.isImage
 import deckers.thibault.aves.utils.MimeTypes.isVideo
@@ -607,7 +607,7 @@ object StorageUtils {
                     // create an ad-hoc temporary file for decoding only
                     createTempFile(context).apply {
                         try {
-                            transferFrom(openInputStream(context, uri), sizeBytes)
+                            copyFrom(openInputStream(context, uri), sizeBytes)
                             return Uri.fromFile(this)
                         } catch (e: Exception) {
                             Log.e(LOG_TAG, "failed to create temporary file from uri=$uri", e)

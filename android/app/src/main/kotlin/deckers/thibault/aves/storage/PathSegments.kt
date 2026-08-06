@@ -31,6 +31,8 @@ class PathSegments {
 
     override fun toString(): String = "PathSegments#${hashCode()}{volumePath=$volumePath relativeDir=$relativeDir fileName=$fileName}"
 
+    fun getPrimaryDir() = relativeDir?.split(File.separator)?.firstOrNull()
+
     fun toMap(): FieldMap {
         return hashMapOf(
             "volumePath" to volumePath,

@@ -38,13 +38,14 @@ import deckers.thibault.aves.model.SourceEntry
 import deckers.thibault.aves.storage.PermissionManager
 import deckers.thibault.aves.storage.StorageUtils
 import deckers.thibault.aves.storage.StorageUtils.ensureTrailingSeparator
+import deckers.thibault.aves.storage.StorageUtils.getVolumePath
 import deckers.thibault.aves.storage.apis.MediaStorePermissions
 import deckers.thibault.aves.storage.apis.StorageApi
 import deckers.thibault.aves.utils.BitmapUtils
 import deckers.thibault.aves.utils.BmpWriter
+import deckers.thibault.aves.utils.FileUtils.copyFrom
+import deckers.thibault.aves.utils.FileUtils.copyTo
 import deckers.thibault.aves.utils.FileUtils.getFileSize
-import deckers.thibault.aves.utils.FileUtils.transferFrom
-import deckers.thibault.aves.utils.FileUtils.transferTo
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes
 import deckers.thibault.aves.utils.MimeTypes.canEditExif
@@ -205,6 +206,7 @@ abstract class ImageProvider {
     }
 
     open fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
+        // TODO TLAD merge with `deletePath()`?
         throw UnsupportedOperationException("`delete` is not supported by this image provider")
     }
 
@@ -238,7 +240,9 @@ abstract class ImageProvider {
                 )
 
                 try {
-                    val newFields = if (isCancelledOp()) skippedFieldMap else {
+                    val newFields = if (isCancelledOp()) {
+                        skippedFieldMap
+                    } else {
                         val toBin = targetDir == StorageUtils.TRASH_PATH_PLACEHOLDER
 
                         val sourceFile = if (sourcePath != null) File(sourcePath) else null
@@ -258,7 +262,7 @@ abstract class ImageProvider {
                             }
                             effectiveTargetDirPath = ensureTrailingSeparator(effectiveTargetDirPath)
 
-                            moveSingle(
+                            val movedFieldMap = moveSingle(
                                 context = context,
                                 sourceFile = sourceFile,
                                 sourceUri = sourceUri,
@@ -269,6 +273,7 @@ abstract class ImageProvider {
                                 copy = copy,
                                 toBin = toBin,
                             )
+                            movedFieldMap
                         }
                     }
                     result["newFields"] = newFields
@@ -310,7 +315,7 @@ abstract class ImageProvider {
         val sourceExtension = sourceFile?.extension
         val sourceDirPath = sourceFile?.parent?.let { ensureTrailingSeparator(it) }
         if (sourceDirPath == targetDirPath && !(copy && nameConflictStrategy == NameConflictStrategy.RENAME)) {
-            // nothing to do unless it's a renamed copy
+            // nothing to do unless it is a renamed copy
             return skippedFieldMap
         }
 
@@ -330,10 +335,9 @@ abstract class ImageProvider {
         val targetNameWithoutExtension = resolution.nameWithoutExtension ?: return skippedFieldMap
         val targetFile = File(targetDirPath, "$targetNameWithoutExtension.$sourceExtension")
 
-        var hybridMove = true
-        var targetPath: String? = null
+        var moveApi: StorageApi? = null
 
-        if (sourceDirPath != null && !copy) {
+        if (sourceDirPath != null) {
             val sourceEditionApi = PermissionManager.getStorageEditionApis(
                 context = context,
                 dirPaths = listOf(ensureTrailingSeparator(sourceDirPath)),
@@ -348,73 +352,110 @@ abstract class ImageProvider {
             ).values.firstOrNull()?.firstOrNull()
                 ?: throw Exception("failed to find API for insertion in targetDir=$targetDirPath")
 
-            var canUseFileApi = sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.FILE
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // cf https://developer.android.com/training/data-storage/shared/media#direct-file-paths
-                if (setOf(StorageApi.FILE, StorageApi.MEDIA_STORE).containsAll(setOf(sourceEditionApi, targetEditionApi))) {
-                    // TODO TLAD check target directory (e.g. `Download` not allowed)
-                    canUseFileApi = true
+            if (sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.MEDIA_STORE) {
+                // Media Store tables are segregated by storage volume,
+                // so the API does not allow moving a file to a different volume
+                if (!copy && getVolumePath(context, sourceFile.path) == getVolumePath(context, targetFile.path)) {
+                    // when moving via the Media Store API, the primary directory of the target is constrained according to the content URI:
+                    // - for `content://media/XXXX/images/media/`, allowed directories are [DCIM, Pictures]
+                    // - for `content://media/XXXX/video/media/`, allowed directories are [DCIM, Movies, Pictures]
+                    if (MediaStorePermissions.canMoveToPath(context = context, mimeType = mimeType, targetDirPath = targetDirPath)) {
+                        moveApi = StorageApi.MEDIA_STORE
+                    }
                 }
             }
-            if (canUseFileApi) {
-                hybridMove = false
-                targetPath = FileImageProvider.move(sourceFile, targetFile)
-            } else if (sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.MEDIA_STORE) {
-                hybridMove = false
-                targetPath = MediaStoreImageProvider.move(
+
+            if (sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.FILE) {
+                moveApi = StorageApi.FILE
+            }
+
+            // according to https://developer.android.com/training/data-storage/shared/media#direct-file-paths
+            // direct file access is possible on Android 11 if Media Store permissions are granted
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                if (setOf(StorageApi.FILE, StorageApi.MEDIA_STORE).containsAll(setOf(sourceEditionApi, targetEditionApi))) {
+                    // in practice moving files sometimes fail (e.g. from SD Pictures dir to SD app bin dir),
+                    // so we only use this direct access for file copy
+                    if (copy) {
+                        moveApi = StorageApi.FILE
+                    }
+                }
+            }
+        }
+
+        val beforeMove = System.nanoTime()
+        val effectiveTargetPath = when (moveApi) {
+            StorageApi.FILE -> {
+                FileImageProvider.move(
+                    sourceFile = sourceFile!!,
+                    targetFile = targetFile,
+                    copy = copy,
+                )
+            }
+
+            StorageApi.MEDIA_STORE -> {
+                MediaStoreImageProvider.move(
                     context = context,
                     mimeType = mimeType,
-                    sourceFile = sourceFile,
                     mediaUri = sourceUri,
+                    sourceFile = sourceFile!!,
                     targetFile = targetFile,
                 )
             }
-        }
 
-        if (hybridMove) {
-            val beforeCopy = System.nanoTime()
-            val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
-            targetPath = createSingle(
-                context = context,
-                mimeType = mimeType,
-                targetDir = targetDirPath,
-                targetNameWithoutExtension = targetNameWithoutExtension,
-                defaultExtension = sourceExtension,
-            ) { output: OutputStream ->
-                try {
-                    sourceDocFile.copyTo(output)
-                } catch (e: SyncFailedException) {
-                    // The copied file is synced after writing, but it consistently fails in some cases
-                    // (e.g. copying to SD card on Xiaomi 2201117PG with Android 11).
-                    // It seems this failure can be safely ignored, as the new file is complete.
-                    Log.w(LOG_TAG, "sync failure after copying from uri=$sourceUri, path=$sourcePath to targetDir=$targetDirPath", e)
+            else -> {
+                Log.d(LOG_TAG, "TLAD move doc at uri=$sourceUri")
+                // always copy, even for move, then delete if necessary
+                val targetPath = createSingle(
+                    context = context,
+                    mimeType = mimeType,
+                    targetDir = targetDirPath,
+                    targetNameWithoutExtension = targetNameWithoutExtension,
+                    defaultExtension = sourceExtension,
+                ) { output: OutputStream ->
+                    try {
+                        StorageUtils.openInputStream(context, sourceUri)?.use { input ->
+                            input.copyTo(output)
+                        }
+                    } catch (e: SyncFailedException) {
+                        // The copied file is synced after writing, but it consistently fails in some cases
+                        // (e.g. copying to SD card on Xiaomi 2201117PG with Android 11).
+                        // It seems this failure can be safely ignored, as the new file is complete.
+                        Log.w(LOG_TAG, "sync failure after copying from uri=$sourceUri, path=$sourcePath to targetDir=$targetDirPath", e)
+                    }
                 }
-            }
-            val afterCopy = System.nanoTime()
-            Log.d(LOG_TAG, "TLAD copy=${(afterCopy - beforeCopy) / 1_000_000}ms")
 
-            if (!copy) {
-                // delete original entry
-                val beforeDelete = System.nanoTime()
-                try {
-                    delete(context, sourceUri, sourcePath, mimeType)
-                } catch (e: Exception) {
-                    Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
+                if (!copy) {
+                    // delete original entry
+                    try {
+                        delete(context, sourceUri, sourcePath, mimeType)
+                    } catch (e: Exception) {
+                        Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
+                    }
                 }
-                val afterDelete = System.nanoTime()
-                Log.d(LOG_TAG, "TLAD delete=${(afterDelete - beforeDelete) / 1_000_000}ms")
-            }
-        }
 
-        targetPath ?: throw Exception("failed to get target path")
+                targetPath
+            }
+        } ?: throw Exception("failed to get target path")
+
+        Log.d(LOG_TAG, "TLAD effectiveTargetPath=$effectiveTargetPath")
+
+        val afterMove = System.nanoTime()
+        var targetSizeBytes = 0L
+        try {
+            targetSizeBytes = getFileSize(effectiveTargetPath)
+        } catch (e: Exception) {
+            Log.w(LOG_TAG, "TLAD failed to get file size", e)
+        }
+        val durationMillis = (afterMove - beforeMove) / 1_000_000
+        Log.d(LOG_TAG, "TLAD moved via $moveApi API ${targetSizeBytes}B in ${durationMillis}ms at ${targetSizeBytes / durationMillis}KB/s")
 
         return if (toBin) {
             hashMapOf(
                 EntryFields.TRASHED to true,
-                EntryFields.TRASH_PATH to targetPath,
+                EntryFields.TRASH_PATH to effectiveTargetPath,
             )
         } else {
-            val fields = scanNewPath(context, targetPath, mimeType)
+            val fields = scanNewPath(context, effectiveTargetPath, mimeType)
             fields
         }
     }
@@ -600,8 +641,9 @@ abstract class ImageProvider {
             if (isVideo(sourceMimeType)) {
                 targetMimeType = sourceMimeType
                 write = { output ->
-                    val sourceDocFile = DocumentFileCompat.fromSingleUri(context, sourceUri)
-                    sourceDocFile.copyTo(output)
+                    StorageUtils.openInputStream(context, sourceUri)?.use { input ->
+                        input.copyTo(output)
+                    }
                 }
             } else {
                 var targetWidthPx: Int
@@ -703,8 +745,7 @@ abstract class ImageProvider {
     ) {
         val editableFile = StorageUtils.createTempFile(context).apply {
             // copy original file to a temporary file for editing
-            val inputStream = StorageUtils.openInputStream(context, targetUri)
-            transferFrom(inputStream, getFileSize(targetPath))
+            copyFrom(StorageUtils.openInputStream(context, targetUri), getFileSize(targetPath))
         }
 
         // copy IPTC / XMP via PixyMeta
@@ -743,7 +784,7 @@ abstract class ImageProvider {
         }
 
         // copy the edited temporary file back to the original
-        editableFile.transferTo(outputStream(context, targetMimeType, targetUri, targetPath))
+        editableFile.copyTo(outputStream(context, targetMimeType, targetUri, targetPath))
         editableFile.delete()
     }
 
@@ -788,7 +829,7 @@ abstract class ImageProvider {
                 output.write(bytes)
             } else {
                 val editableFile = StorageUtils.createTempFile(context).apply {
-                    transferFrom(ByteArrayInputStream(bytes), bytes.size.toLong())
+                    copyFrom(ByteArrayInputStream(bytes), bytes.size.toLong())
                 }
 
                 val exif = ExifInterface(editableFile)
@@ -833,7 +874,7 @@ abstract class ImageProvider {
                 exif.saveAttributes()
 
                 // copy the edited temporary file back to the original
-                DocumentFileCompat.fromFile(editableFile).copyTo(output)
+                editableFile.copyTo(output)
                 editableFile.delete()
             }
         }
@@ -899,7 +940,7 @@ abstract class ImageProvider {
                     // move replaced file to temp storage
                     // so that it can be used as a source for conversion or metadata copy
                     replacementFile = StorageUtils.createTempFile(context).apply {
-                        targetFile.transferTo(outputStream())
+                        targetFile.copyTo(outputStream())
                     }
                     deletePath(context, targetFile.path, mimeType)
                 }
@@ -989,12 +1030,11 @@ abstract class ImageProvider {
 
                         // copy only the image to a temporary file for editing
                         // video will be appended after metadata modification
-                        transferFrom(ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
+                        copyFrom(ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
                     }
                 } else {
                     // copy original file to a temporary file for editing
-                    val inputStream = StorageUtils.openInputStream(context, uri)
-                    transferFrom(inputStream, originalFileSize)
+                    copyFrom(StorageUtils.openInputStream(context, uri), originalFileSize)
                 }
             } catch (e: Exception) {
                 callback.onFailure(e)
@@ -1033,7 +1073,7 @@ abstract class ImageProvider {
             }
 
             // copy the edited temporary file back to the original
-            editableFile.transferTo(outputStream(context, mimeType, uri, path))
+            editableFile.copyTo(outputStream(context, mimeType, uri, path))
 
             if (autoCorrectTrailerOffset && !checkTrailerOffset(
                     context = context,
@@ -1095,12 +1135,11 @@ abstract class ImageProvider {
 
                         // copy only the image to a temporary file for editing
                         // video will be appended after metadata modification
-                        transferFrom(ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
+                        copyFrom(ByteArrayInputStream(imageBytes), imageBytes.size.toLong())
                     }
                 } else {
                     // copy original file to a temporary file for editing
-                    val inputStream = StorageUtils.openInputStream(context, uri)
-                    transferFrom(inputStream, originalFileSize)
+                    copyFrom(StorageUtils.openInputStream(context, uri), originalFileSize)
                 }
             } catch (e: Exception) {
                 callback.onFailure(e)
@@ -1138,7 +1177,7 @@ abstract class ImageProvider {
             }
 
             // copy the edited temporary file back to the original
-            editableFile.transferTo(outputStream(context, mimeType, uri, path))
+            editableFile.copyTo(outputStream(context, mimeType, uri, path))
 
             if (autoCorrectTrailerOffset && !checkTrailerOffset(
                     context = context,
@@ -1289,7 +1328,7 @@ abstract class ImageProvider {
 
         try {
             // copy the edited temporary file back to the original
-            editableFile.transferTo(outputStream(context, mimeType, uri, path))
+            editableFile.copyTo(outputStream(context, mimeType, uri, path))
 
             if (autoCorrectTrailerOffset && !checkTrailerOffset(
                     context = context,
@@ -1686,9 +1725,8 @@ abstract class ImageProvider {
 
         val editableFile = StorageUtils.createTempFile(context).apply {
             try {
-                val inputStream = StorageUtils.openInputStream(context, uri)
                 // partial copy
-                transferFrom(inputStream, originalFileSize - trailerVideoSize)
+                copyFrom(StorageUtils.openInputStream(context, uri), originalFileSize - trailerVideoSize)
             } catch (e: Exception) {
                 Log.d(LOG_TAG, "failed to remove trailer video", e)
                 callback.onFailure(e)
@@ -1698,7 +1736,7 @@ abstract class ImageProvider {
 
         try {
             // copy the edited temporary file back to the original
-            editableFile.transferTo(outputStream(context, mimeType, uri, path))
+            editableFile.copyTo(outputStream(context, mimeType, uri, path))
             editableFile.delete()
         } catch (e: IOException) {
             callback.onFailure(e)
@@ -1751,7 +1789,7 @@ abstract class ImageProvider {
 
         try {
             // copy the edited temporary file back to the original
-            editableFile.transferTo(outputStream(context, mimeType, uri, path))
+            editableFile.copyTo(outputStream(context, mimeType, uri, path))
 
             if (!types.contains(TYPE_XMP) && isTrailerVideoValid && !checkTrailerOffset(
                     context = context,

@@ -110,7 +110,7 @@ class ActivityResultStreamHandler(private val activity: Activity, arguments: Any
             if (e.anyCauseIs<TransactionTooLargeException>()) {
                 error("requestMediaStoreFileAccess-large", "transaction too large with ${uris.size} uris", e)
             } else {
-                val byFromMediaStore = uris.groupBy { uri -> uri.toString().startsWith("content://media/") }
+                val byFromMediaStore = uris.groupBy(StorageUtils::isMediaStoreContentUri)
                 error(
                     "requestMediaStoreFileAccess-request", "failed to request access to ${uris.size} uris" +
                             " (${byFromMediaStore[true]?.size ?: 0} from media store" +

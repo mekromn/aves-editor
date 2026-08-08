@@ -170,9 +170,9 @@ class MediaStoreImageProvider : ImageProvider() {
         return obsoleteIds
     }
 
-    fun getChangedUris(context: Context, sinceGeneration: Int): List<String> {
+    fun getChangedUris(context: Context, sinceGenerationByVolume: Map<String, Long>): List<String> {
         val changedUris = ArrayList<String>()
-        fun check(context: Context, contentUri: Uri) {
+        fun check(context: Context, sinceGeneration: Long, contentUri: Uri) {
             val projection = arrayOf(MediaStore.MediaColumns._ID)
             val selection = "${MediaStore.MediaColumns.GENERATION_MODIFIED} > ?"
             val selectionArgs = arrayOf(sinceGeneration.toString())
@@ -190,8 +190,10 @@ class MediaStoreImageProvider : ImageProvider() {
                 Log.e(LOG_TAG, "failed to get content IDs for contentUri=$contentUri", e)
             }
         }
-        check(context, IMAGE_CONTENT_URI)
-        check(context, VIDEO_CONTENT_URI)
+        sinceGenerationByVolume.forEach { (volumeName, sinceGeneration) ->
+            check(context, sinceGeneration, MediaStore.Images.Media.getContentUri(volumeName))
+            check(context, sinceGeneration, MediaStore.Video.Media.getContentUri(volumeName))
+        }
         return changedUris
     }
 

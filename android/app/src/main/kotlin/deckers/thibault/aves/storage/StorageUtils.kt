@@ -47,14 +47,6 @@ object StorageUtils {
 
     private const val TREE_URI_ROOT = "$SCHEME_CONTENT://$EXTERNAL_STORAGE_PROVIDER_AUTHORITY/tree/"
 
-    private val MEDIA_STORE_VOLUME_EXTERNAL = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.VOLUME_EXTERNAL else "external"
-
-    // TODO TLAD get it from `MediaStore.Images.Media.EXTERNAL_CONTENT_URI`?
-    private val IMAGE_PATH_ROOT = "/$MEDIA_STORE_VOLUME_EXTERNAL/images/"
-
-    // TODO TLAD get it from `MediaStore.Video.Media.EXTERNAL_CONTENT_URI`?
-    private val VIDEO_PATH_ROOT = "/$MEDIA_STORE_VOLUME_EXTERNAL/video/"
-
     private val UUID_PATTERN = Regex("[A-Fa-f\\d-]+")
     private val TREE_URI_PATH_PATTERN = Pattern.compile("(.*?):(.*)")
 
@@ -578,8 +570,11 @@ object StorageUtils {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && isMediaStoreContentUri(uri)) {
             val path = uri.path
             path ?: return uri
+
             // from Android 11 (API 30), accessing the original URI for a `file` or `downloads` media content yields a `SecurityException`
-            if (path.startsWith(IMAGE_PATH_ROOT) || path.startsWith(VIDEO_PATH_ROOT)) {
+            val imagesPath = MediaStore.Images.Media.EXTERNAL_CONTENT_URI.path!!
+            val videoPath = MediaStore.Video.Media.EXTERNAL_CONTENT_URI.path!!
+            if (path.startsWith(imagesPath) || path.startsWith(videoPath)) {
                 // "Caller must hold ACCESS_MEDIA_LOCATION permission to access original"
                 if (context.checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) == PackageManager.PERMISSION_GRANTED) {
                     return MediaStore.setRequireOriginal(uri)

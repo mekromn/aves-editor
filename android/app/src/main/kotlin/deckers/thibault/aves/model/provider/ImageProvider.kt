@@ -1,15 +1,20 @@
 package deckers.thibault.aves.model.provider
 
+import android.app.Activity
+import android.app.RecoverableSecurityException
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
+import android.provider.BaseColumns
 import android.util.Log
 import androidx.core.net.toUri
 import com.bumptech.glide.Glide
 import com.bumptech.glide.request.FutureTarget
 import com.commonsware.cwac.document.DocumentFileCompat
+import deckers.thibault.aves.MainActivity
+import deckers.thibault.aves.MainActivity.Companion.DELETE_SINGLE_PERMISSION_REQUEST
 import deckers.thibault.aves.glide.AvesAppGlideModule
 import deckers.thibault.aves.metadata.ExifInterfaceHelper
 import deckers.thibault.aves.metadata.ExifInterfaceHelper.getSafeDateMillis
@@ -43,6 +48,7 @@ import deckers.thibault.aves.storage.apis.MediaStorePermissions
 import deckers.thibault.aves.storage.apis.StorageApi
 import deckers.thibault.aves.utils.BitmapUtils
 import deckers.thibault.aves.utils.BmpWriter
+import deckers.thibault.aves.utils.FileUtils
 import deckers.thibault.aves.utils.FileUtils.copyFrom
 import deckers.thibault.aves.utils.FileUtils.copyTo
 import deckers.thibault.aves.utils.FileUtils.getFileSize
@@ -55,6 +61,8 @@ import deckers.thibault.aves.utils.MimeTypes.canReadWithExifInterface
 import deckers.thibault.aves.utils.MimeTypes.canRemoveMetadata
 import deckers.thibault.aves.utils.MimeTypes.extensionFor
 import deckers.thibault.aves.utils.MimeTypes.isVideo
+import deckers.thibault.aves.utils.UriUtils.isContentScheme
+import deckers.thibault.aves.utils.UriUtils.isFileScheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -66,6 +74,7 @@ import java.io.SyncFailedException
 import java.nio.channels.Channels
 import java.util.Date
 import java.util.TimeZone
+import java.util.concurrent.CompletableFuture
 import kotlin.math.absoluteValue
 import androidx.exifinterface.media.ExifInterfaceFork as ExifInterface
 
@@ -101,7 +110,7 @@ abstract class ImageProvider {
             dirPaths = listOf(ensureTrailingSeparator(targetDir)),
             insertion = true,
         ).values.firstOrNull()?.firstOrNull()
-            ?: throw Exception("failed to find API for insertion in targetDir=$targetDir")
+            ?: throw Exception("failed to find API for insertion in dir=$targetDir")
 
         when (editionApi) {
             StorageApi.FILE -> {
@@ -135,9 +144,6 @@ abstract class ImageProvider {
         }
     }
 
-    // `DocumentsContract.moveDocument()` needs `sourceParentDocumentUri`, which could be different for each entry
-    // `DocumentsContract.copyDocument()` yields "Unsupported call: android:copyDocument"
-    // when used with entry URI as `sourceDocumentUri`, and targetDirDocFile URI as `targetParentDocumentUri`
     private fun insertByTreeDoc(
         context: Context,
         mimeType: String,
@@ -194,20 +200,93 @@ abstract class ImageProvider {
         if (StorageUtils.isInVault(context, path)) {
             FileImageProvider().apply {
                 val uri = Uri.fromFile(File(path))
-                delete(context, uri, path, mimeType)
+                deleteSingle(context, uri, path, mimeType)
             }
         } else {
             MediaStoreImageProvider().apply {
                 val uri = getContentUriForPath(context, path)
                 uri ?: throw Exception("failed to find content URI for path=$path")
-                delete(context, uri, path, mimeType)
+                deleteSingle(context, uri, path, mimeType)
             }
         }
     }
 
-    open fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
-        // TODO TLAD merge with `deletePath()`?
-        throw UnsupportedOperationException("`delete` is not supported by this image provider")
+    // the following situations are possible:
+    // - there is a content row in the Media Store and there is a file on storage
+    // - there is a content row in the Media Store, but there is no longer a file on storage
+    // - there is no content row in the Media Store, but there is a file on storage
+    fun deleteSingle(context: Context, uri: Uri, path: String?, mimeType: String) {
+        path ?: throw Exception("failed to delete file because path is null")
+
+        val file = File(path)
+
+        val initialContentExists = contentExists(context, uri)
+        val initialFileExists = file.exists()
+        Log.d(LOG_TAG, "delete content at uri=$uri (exists=$initialContentExists), file at path=$file (exists=$initialFileExists)")
+
+        if (initialContentExists) {
+            // the delete request may yield a `RecoverableSecurityException` when using scoped storage,
+            // even if we have permissions on the tree document via SAF
+            val scopedStorage = Build.VERSION.SDK_INT > Build.VERSION_CODES.Q
+            if (MediaStorePermissions.canEdit(context, uri, mimeType) || !scopedStorage) {
+                Log.d(LOG_TAG, "delete via content resolver at uri=$uri")
+                try {
+                    val rowDeleted = context.contentResolver.delete(uri, null, null) > 0
+                    if (!rowDeleted && contentExists(context, uri)) {
+                        throw Exception("failed to delete row from content resolver")
+                    }
+                } catch (securityException: SecurityException) {
+                    // even if the app has access permission granted on the containing directory,
+                    // the delete request may yield a `RecoverableSecurityException` on API >=29
+                    // when the underlying file no longer exists and this is an orphaned entry in the Media Store
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && context is Activity) {
+                        Log.w(LOG_TAG, "caught a security exception when attempting to delete content at uri=$uri", securityException)
+                        val rse = securityException as? RecoverableSecurityException ?: throw securityException
+                        val intentSender = rse.userAction.actionIntent.intentSender
+
+                        // request user permission for this item
+                        MainActivity.pendingScopedStoragePermissionCompleter = CompletableFuture<Boolean>()
+                        context.startIntentSenderForResult(intentSender, DELETE_SINGLE_PERMISSION_REQUEST, null, 0, 0, 0, null)
+                        val granted = MainActivity.pendingScopedStoragePermissionCompleter!!.join()
+
+                        MainActivity.pendingScopedStoragePermissionCompleter = null
+                        if (granted) {
+                            deleteSingle(context, uri, path, mimeType)
+                            return
+                        } else {
+                            throw Exception("failed to get delete permission")
+                        }
+                    } else {
+                        throw securityException
+                    }
+                }
+            }
+        }
+
+        // in theory, deleting via content resolver should remove the file on storage
+        // in practice, the file may still be there afterward
+        if (file.exists()) {
+            Log.d(LOG_TAG, "delete file at path=$file")
+            FileUtils.delete(file)
+        } else if (uri.isFileScheme) {
+            val uriFilePath = File(uri.path!!).path
+            // URI and path both point to the same non-existent path
+            if (uriFilePath == path) return
+        }
+
+        if (file.exists()) {
+            Log.d(LOG_TAG, "delete document at path=$path")
+            val df = StorageUtils.getDocumentFile(context, path, uri)
+            if (df == null || !df.delete()) {
+                throw Exception("failed to delete document with df=$df")
+            }
+        }
+
+        if (contentExists(context, uri) && StorageUtils.isMediaStoreContentUri(uri)) {
+            // in theory, scanning an obsolete path should remove the entry from the Media Store
+            // in practice, the entry may still be there afterward
+            MediaStoreImageProvider.scanObsoletePath(context, uri, path, mimeType)
+        }
     }
 
     suspend fun moveMultiple(
@@ -247,7 +326,7 @@ abstract class ImageProvider {
 
                         val sourceFile = if (sourcePath != null) File(sourcePath) else null
                         if (sourceFile != null && !sourceFile.exists() && toBin) {
-                            delete(context, sourceUri, sourcePath, mimeType = mimeType)
+                            deleteSingle(context, sourceUri, sourcePath, mimeType = mimeType)
                             deletedFieldMap
                         } else {
                             var effectiveTargetDirPath = targetDir
@@ -343,14 +422,14 @@ abstract class ImageProvider {
                 dirPaths = listOf(ensureTrailingSeparator(sourceDirPath)),
                 insertion = false,
             ).values.firstOrNull()?.firstOrNull()
-                ?: throw Exception("failed to find API for edition in targetDir=$targetDirPath")
+                ?: throw Exception("failed to find API for edition in dir=$targetDirPath")
 
             val targetEditionApi = PermissionManager.getStorageEditionApis(
                 context = context,
                 dirPaths = listOf(ensureTrailingSeparator(targetDirPath)),
                 insertion = true,
             ).values.firstOrNull()?.firstOrNull()
-                ?: throw Exception("failed to find API for insertion in targetDir=$targetDirPath")
+                ?: throw Exception("failed to find API for insertion in dir=$targetDirPath")
 
             if (sourceEditionApi == targetEditionApi && sourceEditionApi == StorageApi.MEDIA_STORE) {
                 // Media Store tables are segregated by storage volume,
@@ -402,6 +481,12 @@ abstract class ImageProvider {
                 )
             }
 
+            // TODO TLAD review `DocumentsContract.moveDocument` viability
+            // Regarding SAF move/copy:
+            // - `DocumentsContract.moveDocument()` needs `sourceParentDocumentUri`, which could be different for each entry
+            // - `DocumentsContract.copyDocument()` yields "Unsupported call: android:copyDocument"
+            // when used with entry URI as `sourceDocumentUri`, and targetDirDocFile URI as `targetParentDocumentUri`
+
             else -> {
                 Log.d(LOG_TAG, "TLAD move doc at uri=$sourceUri")
                 // always copy, even for move, then delete if necessary
@@ -427,7 +512,7 @@ abstract class ImageProvider {
                 if (!copy) {
                     // delete original entry
                     try {
-                        delete(context, sourceUri, sourcePath, mimeType)
+                        deleteSingle(context, sourceUri, sourcePath, mimeType)
                     } catch (e: Exception) {
                         Log.w(LOG_TAG, "failed to delete entry with path=$sourcePath", e)
                     }
@@ -1847,6 +1932,25 @@ abstract class ImageProvider {
 
         // used when deleting instead of moving to bin because the target file no longer exists
         val deletedFieldMap: HashMap<String, Any?> = hashMapOf("deleted" to true)
+
+        fun contentExists(context: Context, uri: Uri): Boolean {
+            if (!uri.isContentScheme) return false
+
+            var found = false
+            val projection = arrayOf(BaseColumns._ID)
+            try {
+                val cursor = context.contentResolver.query(uri, projection, null, null, null)
+                if (cursor != null) {
+                    while (cursor.moveToNext()) {
+                        found = true
+                    }
+                    cursor.close()
+                }
+            } catch (e: Exception) {
+                Log.e(LOG_TAG, "failed to query content at uri=$uri", e)
+            }
+            return found
+        }
 
         fun getTimeZoneString(timeZone: TimeZone, dateTimeMillis: Long): String {
             val offset = timeZone.getOffset(dateTimeMillis)

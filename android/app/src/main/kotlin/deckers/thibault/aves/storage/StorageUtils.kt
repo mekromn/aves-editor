@@ -25,6 +25,8 @@ import deckers.thibault.aves.utils.FileUtils.copyFrom
 import deckers.thibault.aves.utils.LogUtils
 import deckers.thibault.aves.utils.MimeTypes.isImage
 import deckers.thibault.aves.utils.MimeTypes.isVideo
+import deckers.thibault.aves.utils.UriUtils.isContentScheme
+import deckers.thibault.aves.utils.UriUtils.isFileScheme
 import deckers.thibault.aves.utils.UriUtils.tryParseId
 import java.io.File
 import java.io.FileInputStream
@@ -37,15 +39,13 @@ import java.util.regex.Pattern
 object StorageUtils {
     private val LOG_TAG = LogUtils.createTag<StorageUtils>()
 
-    private const val SCHEME_CONTENT = ContentResolver.SCHEME_CONTENT
-
     // cf DocumentsContract.EXTERNAL_STORAGE_PROVIDER_AUTHORITY
     private const val EXTERNAL_STORAGE_PROVIDER_AUTHORITY = "com.android.externalstorage.documents"
 
     // cf DocumentsContract.EXTERNAL_STORAGE_PRIMARY_EMULATED_ROOT_ID
     private const val EXTERNAL_STORAGE_PRIMARY_EMULATED_ROOT_ID = "primary"
 
-    private const val TREE_URI_ROOT = "$SCHEME_CONTENT://$EXTERNAL_STORAGE_PROVIDER_AUTHORITY/tree/"
+    private const val TREE_URI_ROOT = "${ContentResolver.SCHEME_CONTENT}://$EXTERNAL_STORAGE_PROVIDER_AUTHORITY/tree/"
 
     private val UUID_PATTERN = Regex("[A-Fa-f\\d-]+")
     private val TREE_URI_PATH_PATTERN = Pattern.compile("(.*?):(.*)")
@@ -522,7 +522,7 @@ object StorageUtils {
         uri ?: return false
         // a URI's authority is [userinfo@]host[:port]
         // but we only want the host when comparing to Media Store's "authority"
-        return SCHEME_CONTENT.equals(uri.scheme, ignoreCase = true) && MediaStore.AUTHORITY.equals(uri.host, ignoreCase = true)
+        return uri.isContentScheme && MediaStore.AUTHORITY.equals(uri.host, ignoreCase = true)
     }
 
     @RequiresApi(Build.VERSION_CODES.Q)
@@ -667,9 +667,10 @@ object StorageUtils {
     fun openInputStream(context: Context, uri: Uri): InputStream? {
         val effectiveUri = getOriginalUri(context, uri)
         return try {
-            return when (uri.scheme) {
-                ContentResolver.SCHEME_FILE -> FileInputStream(uri.path)
-                else -> context.contentResolver.openInputStream(effectiveUri)
+            return if (uri.isFileScheme) {
+                FileInputStream(uri.path)
+            } else {
+                context.contentResolver.openInputStream(effectiveUri)
             }
         } catch (e: Exception) {
             // among various other exceptions,

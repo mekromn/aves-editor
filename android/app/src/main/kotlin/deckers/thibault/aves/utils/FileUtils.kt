@@ -35,6 +35,17 @@ object FileUtils {
         }
     }
 
+    // returns whether file was successfully deleted
+    fun delete(file: File): Boolean {
+        if (!file.exists()) return true
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Files.deleteIfExists(Paths.get(file.absolutePath))
+        } else {
+            file.delete()
+        }
+    }
+
     // move, replacing existing target file, if any
     fun move(sourceFile: File, targetFile: File) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

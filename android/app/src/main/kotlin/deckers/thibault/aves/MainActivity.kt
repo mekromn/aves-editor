@@ -61,6 +61,7 @@ import deckers.thibault.aves.channel.streams.platformtodart.WindowChangeStreamHa
 import deckers.thibault.aves.model.FieldMap
 import deckers.thibault.aves.storage.apis.SafPermissions
 import deckers.thibault.aves.utils.LogUtils
+import deckers.thibault.aves.utils.UriUtils.isGeoScheme
 import deckers.thibault.aves.utils.anyCauseIs
 import deckers.thibault.aves.utils.getParcelableExtraCompat
 import io.flutter.embedding.android.FlutterFragmentActivity
@@ -364,7 +365,7 @@ open class MainActivity : FlutterFragmentActivity() {
             "com.android.camera.action.REVIEW",
             "com.android.camera.action.SPLIT_SCREEN_REVIEW" -> {
                 (intent.data ?: intent.getParcelableExtraCompat<Uri>(Intent.EXTRA_STREAM))?.let { uri ->
-                    if (uri.scheme == "geo") {
+                    if (uri.isGeoScheme) {
                         return hashMapOf(
                             INTENT_DATA_KEY_ACTION to INTENT_ACTION_VIEW_GEO,
                             INTENT_DATA_KEY_URI to uri.toString(),
@@ -620,6 +621,7 @@ open class MainActivity : FlutterFragmentActivity() {
         private val LOG_TAG = LogUtils.createTag<MainActivity>()
         const val INTENT_CHANNEL = "deckers.thibault/aves/intent"
         const val EXTRA_STRING_ARRAY_SEPARATOR = "###"
+
         const val DOCUMENT_TREE_ACCESS_REQUEST = 1
         const val OPEN_FROM_ANALYSIS_SERVICE = 2
         const val CREATE_FILE_REQUEST = 3

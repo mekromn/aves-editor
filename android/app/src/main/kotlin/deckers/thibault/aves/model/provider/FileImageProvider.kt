@@ -77,18 +77,6 @@ internal class FileImageProvider : ImageProvider() {
         }
     }
 
-    override fun delete(context: Context, uri: Uri, path: String?, mimeType: String) {
-        path ?: throw Exception("failed to delete file because path is null")
-
-        val file = File(path)
-        if (file.exists()) {
-            Log.d(LOG_TAG, "delete file at path=$path")
-            if (!file.delete()) {
-                throw Exception("failed to delete entry with uri=$uri path=$path")
-            }
-        }
-    }
-
     override suspend fun renameSingle(
         context: Context,
         mimeType: String,
@@ -141,24 +129,12 @@ internal class FileImageProvider : ImageProvider() {
             return file.path
         }
 
-        fun rename(
-            oldPath: String,
-            newFile: File,
-        ): String {
-            Log.d(LOG_TAG, "rename file at path=$oldPath")
-            val renamed = File(oldPath).renameTo(newFile)
-            if (!renamed) {
-                throw Exception("failed to rename file at path=$oldPath")
-            }
-            return newFile.path
-        }
-
         fun move(
             sourceFile: File,
             targetFile: File,
             copy: Boolean,
         ): String {
-            Log.d(LOG_TAG, "TLAD move file from path=$sourceFile to path=$targetFile")
+            Log.d(LOG_TAG, "move file from path=$sourceFile to path=$targetFile")
 
             if (targetFile.exists()) {
                 throw Exception("failed to move file because target file exists at path=$targetFile")

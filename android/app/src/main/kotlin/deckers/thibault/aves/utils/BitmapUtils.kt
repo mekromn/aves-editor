@@ -81,11 +81,10 @@ object BitmapUtils {
                 bitmap.copyPixelsToBuffer(this)
             }.array()
 
-            // convert pixel format and color space, if necessary
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 bitmap.colorSpace?.let { srcColorSpace ->
-                    val dstColorSpace = ColorSpace.get(ColorSpace.Named.SRGB)
-                    val connector = ColorSpace.connect(srcColorSpace, dstColorSpace)
+                    val srgb = ColorSpace.get(ColorSpace.Named.SRGB)
+                    val extendedSrgb = ColorSpace.get(ColorSpace.Named.EXTENDED_SRGB)
 
                     when (sourceConfig) {
                         BitmapConversion.CONFIG_ANDROID_ARGB_8888 -> {
@@ -96,24 +95,52 @@ object BitmapUtils {
                             } else null
 
                             if (gainmapPixelTransformer != null) {
+                                // Keep upstream gain-map reconstruction semantics for now:
+                                // its math currently assumes the SDR base has first been
+                                // transformed to sRGB. The Ultra HDR path is audited
+                                // separately before changing that color-space contract.
                                 targetConfig = BitmapConversion.CONFIG_DART_RGBA_FLOAT32
                                 bytes = BitmapConversion.fromArgb8888ToDartRgbaFloat32(
                                     bytes,
-                                    connector,
+                                    ColorSpace.connect(srcColorSpace, srgb),
                                     end = byteCount,
                                     gainmapPixelTransformer = gainmapPixelTransformer
                                 )
-                            } else if (srcColorSpace != dstColorSpace) {
-                                bytes = BitmapConversion.fromArgb8888ToArgb8888(bytes, connector, end = byteCount)
+                            } else if (srcColorSpace != srgb) {
+                                // Flutter raw ImageDescriptor currently tags raw pixels as
+                                // sRGB. Preserve wide-gamut coordinates by converting to
+                                // extended sRGB float values rather than clipping them into
+                                // 8-bit sRGB. Components outside [0, 1] remain representable.
+                                targetConfig = BitmapConversion.CONFIG_DART_RGBA_FLOAT32
+                                bytes = BitmapConversion.fromArgb8888ToDartRgbaFloat32(
+                                    bytes,
+                                    ColorSpace.connect(srcColorSpace, extendedSrgb),
+                                    end = byteCount,
+                                    gainmapPixelTransformer = null
+                                )
                             }
                         }
 
                         BitmapConversion.CONFIG_ANDROID_RGBA_F16 -> {
-                            bytes = BitmapConversion.fromRgbaf16ToArgb8888(bytes, connector, end = byteCount)
+                            // Never quantize F16 through ARGB_8888 in the fidelity path.
+                            // Convert its source color coordinates directly into the
+                            // extended-sRGB coordinate system used for Dart float transport.
+                            targetConfig = BitmapConversion.CONFIG_DART_RGBA_FLOAT32
+                            bytes = BitmapConversion.fromRgbaf16ToDartRgbaFloat32(
+                                bytes,
+                                ColorSpace.connect(srcColorSpace, extendedSrgb),
+                                end = byteCount,
+                            )
                         }
 
                         BitmapConversion.CONFIG_ANDROID_RGBA_1010102 -> {
-                            bytes = BitmapConversion.fromRgba1010102ToArgb8888(bytes, connector, end = byteCount)
+                            // Retain the full 10-bit RGB precision by transporting floats.
+                            targetConfig = BitmapConversion.CONFIG_DART_RGBA_FLOAT32
+                            bytes = BitmapConversion.fromRgba1010102ToDartRgbaFloat32(
+                                bytes,
+                                ColorSpace.connect(srcColorSpace, extendedSrgb),
+                                end = byteCount,
+                            )
                         }
                     }
                 }
@@ -122,14 +149,14 @@ object BitmapUtils {
             // do not access bitmap after recycling
             if (recycle) bitmap.recycle()
 
-            // append bitmap size for use by the caller to interpret the raw bytes
+            // append bitmap size and pixel format for use by Dart when it
+            // constructs the raw ImageDescriptor.
             val trailerOffset = bytes.size - RAW_BYTES_TRAILER_LENGTH
             bytes = ByteBuffer.wrap(bytes).apply {
                 position(trailerOffset)
                 putInt(width)
                 putInt(height)
                 putInt(targetConfig)
-                // trailer byte to indicate whether the returned bytes are decoded/encoded
                 put(FORMAT_BYTE_DECODED)
             }.array()
 

@@ -271,7 +271,7 @@ class EditRecipe {
 
     final next = operations.toList();
     final operation = next.removeAt(oldIndex);
-    final clampedIndex = newIndex.clamp(0, next.length);
+    final clampedIndex = newIndex.clamp(0, next.length).toInt();
     next.insert(clampedIndex, operation);
     return copyWith(operations: next);
   }

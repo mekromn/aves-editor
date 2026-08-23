@@ -6,326 +6,309 @@ Last updated: 2026-08-23
 
 - Fork: `mekromn/aves-editor`
 - Upstream: `deckerst/aves`
-- Upstream/default development branch: `develop`
-- Current working branch: `feature/non-destructive-editor-foundation`
-- Base upstream commit: `a17ee5575564266cdec747f1b1eca77989f3a689`
-- Draft PR: `#1` — **Editor foundation: fidelity roadmap, durable recipes, 10x zoom**
-- PR base/head: `develop` <- `feature/non-destructive-editor-foundation`
+- Base/default development branch: `develop`
+- Working branch: `feature/non-destructive-editor-foundation`
+- Upstream base commit: `a17ee5575564266cdec747f1b1eca77989f3a689`
+- Draft PR: **#1 — Editor foundation: fidelity roadmap, durable recipes, 10x zoom**
+- PR remains draft while viewer fidelity, live rendering, and export foundations are still being validated.
 
-## P0 product goals
+## P0 rules
 
-1. **Maximum-fidelity viewer to the limits of the hardware.**
-2. **Full non-destructive image editor integrated into Aves.**
-3. **No hidden image enhancement in Reference viewing mode.**
-4. **Ultra HDR/HDR and wide-gamut content treated as first-class media.**
-5. **Scientific inspection/comparison/validation tools.**
-6. **Every important project fact documented in-repo for 101% continuity.**
+1. Maximum-fidelity viewer to the limits of the source, decoder, Android platform, GPU, and display hardware.
+2. Full high-precision non-destructive editor integrated into Aves.
+3. Reference mode contains no hidden beautification or creative processing.
+4. HDR, Ultra HDR, wide gamut, source profiles, bit depth, and metadata are first-class.
+5. Scientific inspection/comparison/validation tools are part of the product, not an afterthought.
+6. Important project knowledge must be written to the repository for 101% continuity.
 
 Hard pixel rule:
 
-> Every pixel-changing feature must either improve fidelity/correctness or be explicitly identified as an edit/enhancement. Reference mode never receives hidden beautification.
+> Every pixel-changing feature must either improve fidelity/correctness or be explicitly identified as an edit/enhancement.
 
-## Documentation sources of truth
-
-Read in this order when resuming:
+## Resume order
 
 1. `docs/PROJECT_STATE.md`
 2. `docs/CONTINUITY_PROTOCOL.md`
 3. `docs/ROADMAP.md`
 4. latest relevant `docs/chat/*.md`
-5. subsystem design/audit docs, especially `docs/MAXIMUM_FIDELITY_VIEWER.md` and `docs/VIEWER_RENDER_PIPELINE_AUDIT.md`
-6. current branch/PR history
+5. `docs/MAXIMUM_FIDELITY_VIEWER.md`
+6. `docs/VIEWER_RENDER_PIPELINE_AUDIT.md`
+7. current branch / PR / CI history
 
-## Current architecture
+## Implemented: zoom
 
-### Application/viewer foundation
+The shared magnifier maximum is doubled centrally.
 
-Aves remains the app foundation and already supplies:
+- upstream raster ceiling: 5x
+- fork effective raster ceiling: 10x
+- commit: `4ffde695c5196c189749c5a370007e0f389e6c4d`
 
-- gallery/navigation/media indexing;
-- raster viewer with tiled region decoding;
-- editor shell (`ImageEditorPage`, transform/crop, control panel);
-- native Android media fetch/edit/storage channels;
-- `MediaEditService` and an existing Save Copy UI entry point whose upstream editor handler is unfinished;
-- native window APIs for wide-gamut/HDR support, HDR/SDR ratio, desired HDR headroom and dynamic window color mode;
-- an HDR debug panel that can independently toggle wide gamut, HDR mode and manual gain-map application.
+This shared clamp applies consistently to viewer/editor magnification.
 
-### Non-destructive editor model — IMPLEMENTED FOUNDATION
+## Implemented: versioned non-destructive recipe foundation
 
-The source image remains untouched while editing.
+Added a versioned, ordered edit model in `aves_model`:
 
-Current model:
-
-`source -> versioned ordered EditRecipe -> live preview (next) -> explicit full-resolution render/export (later)`
-
-Implemented on the feature branch:
-
-- `EditSourceIdentity` with URI, modified time, size, dimensions and MIME type;
-- versioned `EditRecipe` schema;
+- `EditSourceIdentity`;
+- `EditRecipe`;
 - ordered `EditOperation` stack;
 - stable string operation types/IDs;
-- generic JSON-compatible parameter payloads;
+- JSON-compatible parameter payload;
 - enabled state;
 - opacity;
 - optional mask reference;
-- forward-compatible preservation of unknown future operation types;
-- stack append/replace/remove/move;
-- `EditRecipeController` with undo/redo;
-- continuous-interaction grouping so a slider drag can become one undo step;
-- enable/disable, opacity, mask assignment, duplicate, delete, reorder and reset-all controller operations;
-- unit tests covering serialization/unknown operation preservation/order/undo-redo/interaction grouping/duplicate IDs.
+- append/replace/remove/move;
+- forward-compatible preservation of unknown future operation types.
 
-### Durable edit persistence — IMPLEMENTED FOUNDATION
+Important commits:
 
-Edit recipes use a dedicated SQLite database:
+- `2a9d93392ccd95e9c0bcef449d9a6b32f1365945` — initial recipe model;
+- `b78cd90ccb77812438afbf9597a8d87cfa8ead0b` — export model;
+- `a7180d8a7498b43a71477d698ca9660a8fc0c288` — move-index fix.
 
-`editor.db`
+## Implemented: edit history controller
 
-This is intentionally separate from Aves `metadata.db` because media/index metadata is rebuildable while edit recipes are user-created work that must survive metadata-cache resets.
+`EditRecipeController` supports:
+
+- undo / redo;
+- continuous-interaction grouping (one slider drag can be one undo step);
+- enable / disable;
+- opacity;
+- mask assignment;
+- duplicate;
+- delete;
+- reorder;
+- reset-all;
+- scalar parameter updates.
+
+Initial commit: `1608f66c99ba74babf4ab6965babb235ff36174b`.
+
+Analyzer-driven constructor cleanup: `aaa857319735efd4a6f31fcbfac0843fc4e9e061`.
+
+## Implemented: durable edit persistence
+
+Recipes use a dedicated SQLite database: `editor.db`.
+
+This is intentionally independent from Aves `metadata.db`: gallery/index metadata is rebuildable, but edit recipes are user-created work and must survive metadata-cache resets.
 
 Implemented behavior:
 
 - recipe JSON persisted by source URI;
-- source identity retained inside recipe;
-- exact source fingerprint match restores automatically;
-- same URI with a changed source fingerprint is treated as stale and is **not** automatically applied;
-- stale/malformed recipes are not silently deleted, preserving future recovery options;
-- `ImageEditorPage` reloads recipes and autosaves changes with a short debounce;
-- final recipe is flushed when the editor closes.
+- source fingerprint includes URI, modification time, size, dimensions, MIME type;
+- exact source match restores automatically;
+- same URI with changed fingerprint is retained as stale but is not auto-applied;
+- malformed/unknown stored data is not silently deleted;
+- `ImageEditorPage` loads recipes and autosaves changes with debounce;
+- final recipe is flushed when editor closes.
 
-Future persistence work:
+Key commits:
 
-- recovery/rebind UI for moved/replaced sources;
-- sidecar option;
-- preset storage;
-- mask storage;
-- history persistence beyond current recipe if desired.
+- `011dcfec0b4d6ce61f0d0dc183d9621444a78d0d` — recipe store;
+- `ab21f014aaa4270bfbff5146405e31c802c57fae` — DB size handling;
+- `b086f2c64e2fb405ed2cf825711be63e1d32d99f` — source identity from entry;
+- `622d9374f9f79648dc95e0c571cd195e12e9de01` — editor autosave/reload;
+- `7df5ac69e18cff2795bfc45a7e41b9182250af5b` — analyzer cleanup + controller call update.
 
-## ImageToolbox saving/export influence
+## Implemented: recipe tests
 
-Fork available: `mekromn/ImageToolbox`.
+`test/model/edit_recipe_test.dart` covers:
 
-Architecture to adapt:
+- JSON round trip;
+- unknown future operation preservation;
+- ordered stack movement;
+- undo/redo;
+- continuous-interaction grouping;
+- duplicate operation IDs.
 
-- render/compress separately from saving;
-- output target contains encoded bytes/format/source URI/metadata/filename;
-- storage controller handles chosen folder, beside original, overwrite/new-copy, one-time destination, metadata policy and media scanning.
+Initial test commit: `e6d0400ad1f4a79196c483573b371909ecb77866`.
 
-Do not blindly import ImageToolbox editor modules. If actual code is copied/adapted, document exact provenance and retain Apache-2.0 attribution/NOTICE requirements. Aves BSD-3-Clause requirements remain applicable.
+Controller-constructor test update: `788b1e36780a10cf7c64bbd8906218ea5dfc59be`.
 
-## Zoom — IMPLEMENTED
+## Important UX implementation rule
 
-User requirement: double upstream maximum pinch zoom.
+Visible adjustment sliders have deliberately **not** been exposed yet.
 
-The shared magnifier clamp now applies `maxScaleMultiplier = 2.0`.
+A control that only saves a number but does not correctly alter pixels would be a fake milestone. The high-fidelity rendering/color contract is being established first; then visible controls will be connected to real live processing.
 
-Upstream raster max 5x -> effective fork raster max 10x.
+## Maximum-fidelity viewer audit: important upstream strengths
 
-Relevant commit:
+Aves already provides more correct machinery than initially assumed:
 
-- `4ffde695c5196c189749c5a370007e0f389e6c4d`
+- `originalScale = 1 / devicePixelRatio`;
+- `ScaleState.originalSize` uses that physical scale;
+- raster content dimensions are source-pixel-sized;
+- tile LOD selection is already DPR-aware;
+- at physical 1:1, tile sample size resolves to 1, so full source-resolution region data is requested.
 
-## Maximum-fidelity viewer — AUDIT + FIRST TRANSPORT FIX IN PROGRESS
+Therefore strict 1:1 work builds on the existing scale rather than replacing it.
 
-Detailed audit: `docs/VIEWER_RENDER_PIPELINE_AUDIT.md`.
+Remaining Pixel Inspector work:
 
-### Important positive upstream findings
+- explicit sample-size-1 guarantee;
+- unfiltered/nearest rendering for an explicit inspection mode;
+- deterministic physical-pixel alignment;
+- diagnostics proving the source-pixel/panel-pixel ratio;
+- validation through rotation/flip/fractional geometry.
 
-Aves already has a strong base:
+## P0 fidelity bottleneck: normal Android region decode
 
-- `ScaleBoundaries.originalScale = 1 / devicePixelRatio`;
-- `ScaleState.originalSize` uses that scale;
-- because raster content size is source-pixel-sized, this is the correct baseline for one source pixel per physical display pixel;
-- tiled LOD selection is already DPR-aware;
-- at physical 1:1 the tile sampler requests `sampleSize = 1`, so full source-resolution regions are available.
+`RegionFetcher` still requests:
 
-### Remaining strict 1:1 work
+- `Bitmap.Config.ARGB_8888`;
+- `ColorSpace.Named.SRGB`.
 
-Upstream `originalSize` is not yet a strict pixel-inspection path because it still uses filtered rendering (`FilterQuality.high` at the exact 1:1 condition).
+That can force tiled wide-gamut/high-precision content through an 8-bit sRGB choke point before Flutter sees it.
 
-Planned strict Pixel Inspector mode:
+Android behavior was checked: leaving the preferred color space unset can allow embedded/config-appropriate color handling. The forced sRGB request is therefore not an unavoidable platform constraint.
 
-- sample size 1 guaranteed;
-- unfiltered/nearest sampling in explicit pixel-inspection mode;
-- deterministic physical-pixel alignment/snapping;
-- diagnostics proving source-pixel-to-panel-pixel ratio;
-- validation for rotations/flips/fractional viewport geometry.
+**This normal decoder request has not yet been changed.** It will be changed after the transport/build path is stable and target-device validation can measure the consequences.
 
-### Major fidelity bottleneck found: Android tiled decode
+## Implemented: first high-precision native-to-Dart transport fix
 
-`RegionFetcher` currently requests:
+The upstream raw bridge also reduced normal F16/10-bit/wide-gamut bitmap output to ARGB8888+sRGB.
 
-- `Bitmap.Config.ARGB_8888`
-- `ColorSpace.Named.SRGB`
+The fork now contains direct high-precision transport helpers and bridge selection:
 
-for normal region decoding.
+- RGBA_F16 -> Dart RGBA float32 without an ARGB8888 intermediate;
+- RGBA_1010102 -> Dart RGBA float32 without reducing 10-bit RGB to 8-bit;
+- non-sRGB ARGB8888 -> extended-sRGB float coordinates rather than clipping into ordinary 8-bit sRGB;
+- ordinary sRGB ARGB8888 remains on the existing compact path;
+- existing gain-map reconstruction keeps its previous base-sRGB assumption until Ultra HDR math is validated separately.
 
-This can force large wide-gamut/high-precision images through an 8-bit sRGB choke point before Flutter receives them.
+Commits:
 
-Android documentation confirms that a null preferred color space can let the decoder choose the embedded image color space or a config-appropriate space, so the forced sRGB path is not an unavoidable platform limitation.
+- `026d7a184b690d502815985c97e6f2f490b2b094` — high-precision conversion helpers;
+- `a0b849add90f9c4c14b21fbeeb8b21b3baaf4be3` — high-precision/wide-gamut bridge selection.
 
-**The forced region-decode preference has not yet been changed.** It will be changed only after transport/build/device validation.
+This currently improves cases where Android already supplies better bitmap data. It does not yet remove the normal RegionFetcher ARGB8888+sRGB preference.
 
-### Native raw bridge — FIRST HIGH-PRECISION FIX IMPLEMENTED
+Known runtime concern: float32 transport costs 16 bytes/pixel; memory/fallback policy must be engineered and tested explicitly.
 
-Upstream `BitmapUtils.getRawBytes()` also quantized normal F16/1010102/wide-gamut output through ARGB8888+sRGB.
+## Flutter raw color contract: verified
 
-The fork now adds direct high-precision transport:
-
-- RGBA_F16 -> Dart RGBA float32 without ARGB8888 quantization;
-- RGBA_1010102 -> Dart RGBA float32 without losing 10-bit RGB precision;
-- non-sRGB ARGB8888 -> extended-sRGB float coordinates so wide-gamut values can remain outside normal [0,1] sRGB instead of being clipped to ordinary 8-bit sRGB;
-- ordinary sRGB ARGB8888 remains on the compact 8-bit path;
-- gain-map reconstruction deliberately retains its previous base-sRGB assumption until the Ultra HDR math is separately validated.
-
-Relevant commits:
-
-- `026d7a184b690d502815985c97e6f2f490b2b094` — direct high-precision conversion helpers;
-- `a0b849add90f9c4c14b21fbeeb8b21b3baaf4be3` — use float transport for high-precision/wide-gamut bitmap output.
-
-This improves fidelity **when the decoder already supplies better data**. It does not yet remove `RegionFetcher`'s normal ARGB8888+sRGB request.
-
-### Flutter raw color-space constraint verified
-
-The exact pinned Flutter engine implementation of `ImageDescriptor::initRaw()` tags raw descriptors with `SkColorSpace::MakeSRGB()` and the public Dart `ImageDescriptor.raw(...)` factory has no arbitrary color-space parameter.
-
-Therefore raw P3 coordinates cannot simply be transported unchanged. The current experimental bridge converts wide-gamut data into high-precision extended-sRGB coordinates before Dart and must now be validated for out-of-gamut preservation through Impeller and the output surface.
-
-### Tile seam risk
-
-Tiles are currently adjacent non-overlapping rectangles. Reconstruction filters may sample tile boundaries without neighboring source texels. Seam/gutter behavior needs an objective regression test and overlap/crop implementation if required.
-
-## Ultra HDR — EXISTING HOOK FOUND, FINAL DESIGN NOT YET ACCEPTED
-
-Aves already includes:
-
-- `PlatformMediaFetchService.applyHdrGainmap` (false by default);
-- `applyGainmap` passed through region requests;
-- Android `GainmapUtils` that reads gain-map metadata and manually reconstructs gain onto base pixels;
-- a special path that can output reconstructed values as Dart RGBA float32;
-- dynamic window HDR/wide-gamut APIs and an HDR debug panel;
-- commented-out viewer-controller code intended to switch the window to HDR for `entry.isHdr` content.
-
-This is useful infrastructure but must be validated rather than assumed Reference-correct.
-
-Audit still required for:
-
-- base/gain-map color-space assumptions;
-- gain-map spatial sampling/interpolation;
-- display headroom behavior;
-- Android native Ultra HDR presentation versus manual reconstruction;
-- preservation of gain maps through the viewer/editor/export pipeline;
-- correct HDR working representation.
-
-Automatic viewer HDR switching remains intentionally disabled until the pixel/gain-map path is correct; switching an HDR window on while still feeding SDR-flattened pixels would not satisfy Reference fidelity.
-
-Long-term edited Ultra HDR model remains:
-
-`Ultra HDR source -> HDR working representation -> high-precision edits -> edited HDR + derived SDR rendition -> regenerated gain map -> JPEG/R (and later possible HEIC Ultra HDR)`
-
-## Flutter live-preview capability — VERIFIED IN PINNED SDK
-
-The fork pins Flutter submodule commit:
+Pinned Flutter submodule:
 
 `7c7929adb0767c020659a422ae86df9ec0d5f82a`
 
-That exact SDK contains:
+The exact engine implementation of raw `ImageDescriptor` creates the raw image with sRGB color-space semantics, and the public Dart raw descriptor factory does not accept an arbitrary source color-space tag.
 
-- `ImageFilter.shader(FragmentShader)`;
-- `ImageFilter.isShaderFilterSupported`;
-- `FragmentProgram.fromAsset`;
-- named uniform binding APIs.
+Therefore raw Display-P3 channel coordinates cannot simply be forwarded unchanged. Current experimental transport converts source data into extended-sRGB coordinates and relies on float values outside ordinary [0,1] sRGB where necessary. This must be validated through Flutter/Impeller/output surface before becoming the final Reference transport contract.
 
-`ImageFilter.shader` is Impeller-only and has documented shader-input requirements.
+## HDR / Ultra HDR: existing Aves scaffolding discovered
+
+Aves already exposes window APIs for:
+
+- wide-gamut support;
+- HDR support;
+- current wide/HDR mode;
+- display HDR/SDR ratio;
+- desired HDR headroom;
+- dynamic window color mode.
+
+Native Android `ActivityWindowHandler` already implements these operations.
+
+Aves also already has:
+
+- `PlatformMediaFetchService.applyHdrGainmap` (off by default);
+- gain-map data passed through region requests;
+- `GainmapUtils` manual gain-map reconstruction;
+- float output for the existing gain-map reconstruction path;
+- an HDR debug panel with independent wide-gamut/HDR/headroom/gain-map controls;
+- commented-out `ViewerController` code intended to automatically switch HDR mode for `entry.isHdr` media.
+
+Decision: **do not blindly enable automatic HDR yet.** An HDR window fed incorrect/flattened pixel data is not a fidelity improvement.
+
+Ultra HDR still needs validation of:
+
+- source/base color-space assumptions;
+- gain-map spatial interpolation;
+- display-headroom behavior;
+- manual reconstruction versus Android-native Ultra HDR presentation;
+- transform preservation;
+- editing/regeneration/export behavior.
+
+Long-term edited Ultra HDR model:
+
+`Ultra HDR source -> HDR working representation -> high-precision edits -> edited HDR + derived SDR rendition -> regenerated gain map -> Ultra HDR output`
+
+## Live editor shader capability: verified, not yet exposed
+
+The pinned Flutter SDK supports Impeller `ImageFilter.shader(FragmentShader)` and runtime support detection.
 
 Planned use:
 
-- pointwise Light/Color live preview after the color transport/working-space contract is fixed;
-- wrap photo pixels only, not crop scrim/selection UI;
-- bypass the filter entirely for untouched Reference mode.
+- pointwise Light/Color preview after the color transport contract is validated;
+- filter only photo pixels, never crop/selection UI;
+- untouched Reference rendering bypasses the shader entirely.
 
-Do not implement Structure/Tonal Contrast/local Ambiance as naive screen-space filters because radius/strength would vary with zoom. Those need source-space/multipass behavior.
+Structure, Tonal Contrast, and true local Ambiance will **not** be faked as zoom-dependent screen-space effects; they require source-space/multipass design.
 
-## Initial editing feature set
+## CI / test APK workflow
 
-Planned controls include:
+Added `.github/workflows/editor-test-apk.yml`.
 
-- Exposure, Brightness, Contrast, Highlights, Shadows, Whites, Blacks;
-- Temperature, Tint, Saturation, Vibrance;
-- Ambiance-style local tonal balancing;
-- Tonal Contrast-style high/mid/low local contrast with protections;
-- Structure, Sharpening, multi-scale detail, denoise later;
-- Skin Tone and Blue Tone selective adjustments;
-- Pixel Adaptive-style color-volume expansion as an explicit enhancement/edit mode only;
-- Curves, scopes, masks and analysis tools.
+It performs:
 
-Snapseed/Google Photos behavior is reference/inspiration where proprietary math is unpublished. Functional equivalents are independently implemented and may be black-box calibrated.
+1. dependency restore;
+2. localization generation;
+3. static analysis;
+4. unit tests;
+5. Play-flavor profile APK build;
+6. APK artifact upload.
 
-## CI / test APK — RUNNING
+### First code-bearing run
 
-Added `.github/workflows/editor-test-apk.yml` for feature branches and PRs.
+- run: `32628418794`
+- job: `97167306116`
+- result: **failed at static analysis**
+- tests/build/artifact were skipped because analysis failed.
 
-Intended steps:
+The failure contained only two analyzer infos treated as fatal by the project workflow:
 
-- Flutter packages;
-- localization generation;
-- static analysis;
-- unit tests;
-- Play-flavor profile APK build;
-- APK artifact upload.
+1. unnecessary `flutter/foundation.dart` import in `entry_editor_page.dart`;
+2. `prefer_initializing_formals` in `EditRecipeController`.
 
-Code-bearing workflow run observed:
+Both were fixed immediately:
 
-- Editor test APK run `32628418794`
-- job `97167306116` — **Validate and build profile APK**
+- `aaa857319735efd4a6f31fcbfac0843fc4e9e061` — initializing-formal cleanup;
+- `7df5ac69e18cff2795bfc45a7e41b9182250af5b` — unnecessary import removal and editor call update;
+- `788b1e36780a10cf7c64bbd8906218ea5dfc59be` — test call-site update.
 
-Last observed state in this session:
+A workflow run for the newest fix commit had not yet surfaced through the connected GitHub API at the time of this state update. **Do not claim the branch is green yet.**
 
-- setup/JDK/checkout/pub get/gen-l10n: passed;
-- static analysis: **in progress**;
-- unit tests/build/artifact upload: pending.
+## Documentation / continuity status
 
-Do not claim CI is passing until the run concludes successfully.
+Established and maintained:
 
-## Draft PR
+- `docs/CONTINUITY_PROTOCOL.md`;
+- `docs/ROADMAP.md`;
+- `docs/MAXIMUM_FIDELITY_VIEWER.md`;
+- `docs/VIEWER_RENDER_PIPELINE_AUDIT.md`;
+- chronological files under `docs/chat/` including this implementation session;
+- this state snapshot.
 
-PR #1 remains draft while the rendering path and first real live controls are implemented.
+All meaningful architecture choices, failures, commits, and test state from this session are now represented in-repo.
 
-Current PR purpose:
+## Immediate next engineering order
 
-- continuity/fidelity/roadmap documentation;
-- 10x zoom;
-- durable edit recipe foundation;
-- undo/redo and stack controller;
-- editor autosave/reload;
-- tests;
-- CI/test APK workflow;
-- maximum-fidelity viewer audit;
-- first high-precision native-to-Dart pixel transport fix.
-
-## Immediate next implementation order
-
-1. let the current analyzer/test/APK workflow validate the editor + transport code and fix any failures;
+1. verify the post-lint-fix CI run; fix any test/Kotlin/build failures immediately;
 2. validate extended-sRGB float transport through Flutter/Impeller and the Android output surface;
-3. redesign the Android region decode policy so it does not globally force ARGB8888+sRGB;
-4. use the existing HDR debug controls to characterize wide-gamut/HDR surface behavior on target hardware;
-5. validate/improve Ultra HDR presentation using the existing gain-map hook before enabling automatic viewer HDR mode;
+3. replace the forced normal ARGB8888+sRGB region decode with a source/capability-aware policy;
+4. characterize wide-gamut/HDR surface behavior using the existing debug harness on target hardware;
+5. validate/rework Ultra HDR gain-map presentation before automatic HDR viewer switching;
 6. implement strict physical 1:1 Pixel Inspector mode;
-7. add rendering diagnostics for source format, decode format, tile sample size, DPR, scale, window color mode and HDR state;
-8. then wire first visible pointwise Light/Color adjustments through a high-precision live preview path;
-9. then implement full-resolution export render/save path;
-10. then advanced spatial operations and masks.
+7. add rendering telemetry (source/decode config, tile sample, DPR, scale, window color mode, HDR/headroom, cache/timing);
+8. expose first real pointwise Light/Color controls only when the live high-precision path is correct;
+9. implement original-resolution render/export and ImageToolbox-inspired save destinations/profiles;
+10. continue into spatial tone/detail, masks, scopes, RAW, batch, and automated regression testing per `docs/ROADMAP.md`.
 
-## Known uncertainties requiring measurement/testing
+## Known unresolved items requiring measurement, not guesses
 
-- exact Android codec behavior when requesting F16/wide-gamut region output across JPEG/PNG/HEIC/AVIF/TIFF/RAW paths;
-- out-of-normal-sRGB float values surviving raw `ui.ImageDescriptor` and Impeller without premature clamp;
-- Impeller render-target precision and gamut on target Android hardware;
-- Android window/surface color-mode interaction with Flutter compositing in the pinned engine;
-- correct Ultra HDR headroom control and gain-map preservation strategy;
-- whether tile gutters are visibly/quantitatively required for all reconstruction modes;
-- memory/performance cost of float32 tile transport and the correct explicit fallback policy;
-- highest-fidelity export encoders without unintended conversions;
-- format-specific handling for RAW, TIFF, HEIF/HEIC, AVIF and possible JPEG XL.
-
-These must be established by source inspection and objective device tests, not guessed.
+- Android decoder behavior for F16/wide-gamut region output across formats/devices;
+- whether extended-sRGB out-of-range float values survive raw Flutter image creation, Impeller, and the Android surface without premature clamp;
+- actual Impeller render-target precision/gamut on target Android hardware;
+- correct memory/fallback policy for float32 tile transport;
+- final Android wide-gamut/HDR window behavior with Flutter compositing;
+- correct Ultra HDR gain-map/headroom/color behavior;
+- whether/how much tile gutters improve reconstruction seam behavior;
+- highest-fidelity full-resolution export path for each supported format.

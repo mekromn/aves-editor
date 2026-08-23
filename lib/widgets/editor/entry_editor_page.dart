@@ -13,7 +13,6 @@ import 'package:aves/widgets/editor/transform/cropper.dart';
 import 'package:aves/widgets/viewer/overlay/top/minimap.dart';
 import 'package:aves_magnifier/aves_magnifier.dart';
 import 'package:aves_model/aves_model.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -49,7 +48,7 @@ class _ImageEditorPageState extends State<ImageEditorPage> {
     _transformController = TransformController(widget.entry.displaySize);
     _editRecipeStore = EditRecipeStore();
     _editRecipeController = EditRecipeController(
-      recipe: EditRecipe.empty(widget.entry.editSourceIdentity),
+      EditRecipe.empty(widget.entry.editSourceIdentity),
     )..addListener(_onEditRecipeChanged);
 
     _actionNotifier.addListener(_onActionChanged);

@@ -9,6 +9,7 @@ Documentation is a P0 part of this fork. Start here before substantial work.
 3. [`ROADMAP.md`](ROADMAP.md) — ordered product and engineering roadmap for the maximum-fidelity viewer/editor.
 4. [`chat/`](chat/) — chronological project conversation records.
 5. [`MAXIMUM_FIDELITY_VIEWER.md`](MAXIMUM_FIDELITY_VIEWER.md) — non-negotiable reference-viewer fidelity requirements.
+6. [`VIEWER_RENDER_PIPELINE_AUDIT.md`](VIEWER_RENDER_PIPELINE_AUDIT.md) — source-level decode/tile/color/HDR/Flutter pipeline findings and fidelity bottlenecks.
 
 ## Documentation rule
 

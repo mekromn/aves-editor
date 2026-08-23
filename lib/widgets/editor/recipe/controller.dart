@@ -15,10 +15,10 @@ class EditRecipeController extends ChangeNotifier {
   EditRecipe? _interactionStart;
   int _idSequence = 0;
 
-  EditRecipeController({
-    required EditRecipe recipe,
+  EditRecipeController(
+    this._recipe, {
     this.maxHistoryLength = 100,
-  }) : _recipe = recipe;
+  });
 
   EditRecipe get recipe => _recipe;
 

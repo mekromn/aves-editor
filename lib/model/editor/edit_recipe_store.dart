@@ -132,7 +132,7 @@ class EditRecipeStore {
 
   Future<int> dbFileSize() async {
     final file = File(await path);
-    return file.existsSync() ? file.length() : 0;
+    return await file.exists() ? await file.length() : 0;
   }
 
   Future<void> close() async {

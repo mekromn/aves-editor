@@ -21,6 +21,10 @@ class ScaleBoundaries extends Equatable {
 
   static const Alignment basePosition = Alignment.center;
 
+  // This fork prioritizes close source inspection. Keep the configured scale
+  // semantics intact, but allow pinch zoom to travel twice as far as upstream.
+  static const double maxScaleMultiplier = 2.0;
+
   @override
   List<Object?> get props => [_allowOriginalScaleBeyondRange, _minScale, _maxScale, _initialScale, viewportSize, contentSize, padding, externalTransform];
 
@@ -109,7 +113,6 @@ class ScaleBoundaries extends Equatable {
 
     final positionX = basePosition.x;
     final widthDiff = max(0, computedWidth - viewportWidth);
-
     final minX = ((positionX - 1).abs() / 2) * widthDiff * -1;
     final maxX = ((positionX + 1).abs() / 2) * widthDiff;
     final _padding = padding?.call(scale) ?? EdgeInsets.zero;
@@ -122,7 +125,6 @@ class ScaleBoundaries extends Equatable {
 
     final positionY = basePosition.y;
     final heightDiff = max(0, computedHeight - viewportHeight);
-
     final minY = ((positionY - 1).abs() / 2) * heightDiff * -1;
     final maxY = ((positionY + 1).abs() / 2) * heightDiff;
     final _padding = padding?.call(scale) ?? EdgeInsets.zero;
@@ -137,7 +139,7 @@ class ScaleBoundaries extends Equatable {
     }.fold(double.infinity, min);
 
     final maxScale = {
-      scaleForLevel(_maxScale),
+      scaleForLevel(_maxScale) * maxScaleMultiplier,
       _allowOriginalScaleBeyondRange ? originalScale : double.negativeInfinity,
       initialScale,
     }.fold(.0, max);

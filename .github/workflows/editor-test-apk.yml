@@ -1,0 +1,58 @@
+name: Editor test APK
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+  pull_request:
+    branches:
+      - develop
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  validate_and_build:
+    name: Validate and build profile APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Set up JDK for Android Gradle plugin
+        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Get Flutter packages
+        run: ./flutterw pub get
+
+      - name: Generate app localizations
+        run: ./flutterw gen-l10n
+
+      - name: Static analysis
+        run: ./flutterw analyze
+
+      - name: Unit tests
+        run: ./flutterw test
+
+      - name: Select Play flavor dependencies
+        run: scripts/apply_flavor_play.sh
+
+      - name: Build profile APK
+        run: ./flutterw build apk --profile -t lib/main_play.dart --flavor play
+
+      - name: Upload installable test APK
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: aves-editor-profile-${{ github.sha }}
+          path: build/app/outputs/**/*.apk
+          if-no-files-found: error
+          retention-days: 14

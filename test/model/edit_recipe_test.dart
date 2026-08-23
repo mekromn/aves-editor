@@ -58,7 +58,7 @@ void main() {
   });
 
   test('controller supports undo and redo', () {
-    final controller = EditRecipeController(recipe: EditRecipe.empty(source));
+    final controller = EditRecipeController(EditRecipe.empty(source));
 
     controller.setScalar(EditOperationTypes.exposure, 1.0);
     controller.setScalar(EditOperationTypes.contrast, .25);
@@ -75,7 +75,7 @@ void main() {
   });
 
   test('continuous interaction becomes one undo step', () {
-    final controller = EditRecipeController(recipe: EditRecipe.empty(source));
+    final controller = EditRecipeController(EditRecipe.empty(source));
 
     controller.beginInteraction();
     controller.setScalar(EditOperationTypes.exposure, .1);
@@ -93,7 +93,7 @@ void main() {
   });
 
   test('duplicate gets a unique operation ID and stays adjacent', () {
-    final controller = EditRecipeController(recipe: EditRecipe.empty(source));
+    final controller = EditRecipeController(EditRecipe.empty(source));
     controller.setScalar(EditOperationTypes.structure, .4);
 
     final original = controller.recipe.operations.single;

@@ -73,7 +73,7 @@ The source data is full resolution, but this is not a strict unfiltered pixel-in
 
 - force sample size 1;
 - use nearest/unfiltered sampling (`FilterQuality.none` or a lower-level equivalent) only in explicit pixel-inspection mode;
-- align/snaps image translation so source pixel boundaries map deterministically to physical display pixel boundaries;
+- align/snap image translation so source pixel boundaries map deterministically to physical display pixel boundaries;
 - expose source-pixel-to-panel-pixel ratio in diagnostics;
 - test rotated/flipped images and fractional viewport dimensions.
 
@@ -116,9 +116,15 @@ For the normal successful tile path, wide-gamut and higher-precision source cont
 
 This is a real Reference-mode fidelity bottleneck and a P0 target for this fork.
 
+### Android platform semantics verified
+
+Current Android documentation says that when `inPreferredColorSpace` is null, the decoder chooses the embedded image color space or one appropriate for the requested config; examples include sRGB for ARGB8888 and EXTENDED_SRGB for RGBA_F16.
+
+Therefore the current forced sRGB request is an intentional upstream narrowing, not an unavoidable Android behavior.
+
 ### Required replacement behavior
 
-The decoder policy must become source/capability aware instead of globally requesting ARGB_8888+sRGB.
+The decoder policy must become source/capability aware instead of globally requesting ARGB8888+sRGB.
 
 Potential outputs to evaluate include:
 
@@ -128,29 +134,60 @@ Potential outputs to evaluate include:
 - a controlled high-precision working representation for editing/HDR paths;
 - fallback to ARGB_8888 only when the source/platform requires it.
 
-Do not commit a replacement policy until codec/device behavior is tested across the permanent image corpus.
+The forced decoder preference itself has **not yet been changed**. That change will follow analyzer/build and target-device testing of the transport layer first.
 
 ---
 
-## 6. `BitmapUtils.getRawBytes()` currently converts normal output to sRGB
+# Native raw-byte bridge
 
-The native-to-Dart raw bridge obtains the Android bitmap color space, then creates a connector to `ColorSpace.Named.SRGB`.
+## 6. Upstream bridge also had an 8-bit/sRGB bottleneck
 
-Current normal conversions include:
+Before this fork's first transport patch, `BitmapUtils.getRawBytes()` connected normal bitmap output to `ColorSpace.Named.SRGB` and converted:
 
 - ARGB_8888 source -> ARGB_8888 sRGB;
 - RGBA_F16 source -> ARGB_8888 sRGB;
 - RGBA_1010102 source -> ARGB_8888 sRGB.
 
-### Consequence
+So even a higher-precision fallback bitmap could be reduced before Dart received it.
 
-Even if a decoder returns a higher-precision or wide-gamut bitmap, the bridge can currently reduce that information before Dart/Flutter sees it.
+## 7. First high-precision transport patch — IMPLEMENTED, NOT YET DEVICE-VALIDATED
 
-This must be changed for the maximum-fidelity fork.
+Commits:
+
+- `026d7a184b690d502815985c97e6f2f490b2b094` — add direct F16/10-bit -> Dart float32 conversion helpers;
+- `a0b849add90f9c4c14b21fbeeb8b21b3baaf4be3` — use high-precision float transport for non-8-bit/wide-gamut bitmap output.
+
+New behavior when such a bitmap reaches `BitmapUtils.getRawBytes()`:
+
+- RGBA_F16 is converted directly to Dart RGBA float32 instead of quantizing through ARGB8888;
+- RGBA_1010102 is converted directly to Dart RGBA float32 instead of losing 10-bit precision;
+- non-sRGB ARGB8888 can be transformed into extended-sRGB float coordinates instead of being clipped/quantized into ordinary 8-bit sRGB;
+- ordinary sRGB ARGB8888 remains on the compact existing 8-bit path;
+- the existing gain-map path deliberately retains its previous sRGB-base assumption for now, because Ultra HDR color-space math is being audited separately.
+
+This patch improves precision **when the decoder already supplies better data**. It does not yet fix the normal region path because `RegionFetcher` still requests ARGB8888+sRGB.
+
+### Why extended-sRGB coordinates
+
+The pinned Flutter raw-image API does not accept an arbitrary source color-space tag. Therefore P3/other wide-gamut numeric coordinates cannot simply be passed unchanged and labeled as raw sRGB.
+
+The bridge converts wide-gamut data into the sRGB-primary coordinate system while retaining out-of-[0,1] floating-point components. This is the intended transport representation to validate before changing the decoder policy.
+
+### Validation still required
+
+- Kotlin/Flutter analyzer/build;
+- Pixel 9 Pro XL rendering of known P3 patches;
+- out-of-sRGB values surviving `ui.ImageDescriptor` and Impeller without premature clamp;
+- memory behavior of float32 tile transport;
+- comparison against full-image encoded/profile-aware decode.
+
+Do not yet claim this patch is reference-validated.
 
 ---
 
-## 7. Dart bridge already supports more precision than the normal native path feeds it
+# Flutter raw-image color contract
+
+## 8. Dart bridge already supports high precision, but raw images are tagged sRGB
 
 `InteropDecoding.rawBytesToDescriptor()` recognizes custom pixel format codes for:
 
@@ -160,19 +197,29 @@ This must be changed for the maximum-fidelity fork.
 
 RGBA1010102 is unpacked to `ui.PixelFormat.rgbaFloat32` for Flutter.
 
-RGBA float32 is passed to `ui.ImageDescriptor.raw(... pixelFormat: rgbaFloat32)`.
+The exact pinned Flutter engine source for `ImageDescriptor::initRaw()` sets:
+
+`color_space = SkColorSpace::MakeSRGB()`
+
+for raw descriptors regardless of raw pixel format.
+
+The Dart API's `ImageDescriptor.raw(...)` factory exposes no color-space argument.
 
 ### Consequence
 
-There is already a useful high-precision transport capability on the Dart side. The native region pipeline currently underuses it by converting ordinary F16/1010102 output to ARGB8888/sRGB.
+Raw Display-P3 coordinates cannot be handed across unchanged; the engine would interpret the channel basis as sRGB.
 
-This makes a high-fidelity bridge upgrade substantially more tractable than replacing the entire viewer architecture.
+Float transport is still useful because values outside normal sRGB can be represented in the sRGB coordinate basis. This is what the first native bridge patch is designed to preserve and now needs objective validation.
+
+### Important distinction
+
+Encoded image decode is different: Flutter's image generator can retain color-space information from encoded/profiled content. The raw tiled bridge is where this explicit transport-space problem exists.
 
 ---
 
 # Ultra HDR findings
 
-## 8. Aves already has an Ultra HDR gain-map hook
+## 9. Aves already has an Ultra HDR gain-map hook
 
 `PlatformMediaFetchService` contains a static `applyHdrGainmap` flag (currently false by default).
 
@@ -186,7 +233,7 @@ Ultra HDR support is not starting from zero. There is existing gain-map reconstr
 
 ---
 
-## 9. Current gain-map implementation is a manual reconstruction path
+## 10. Current gain-map implementation is a manual reconstruction path
 
 `GainmapUtils.getGainmapPixelTransformer()` reads:
 
@@ -219,7 +266,7 @@ It must be validated for:
 
 # Flutter runtime-shader findings
 
-## 10. Exact bundled Flutter supports `ImageFilter.shader`
+## 11. Exact bundled Flutter supports `ImageFilter.shader`
 
 The fork pins Flutter through the `.flutter` submodule at commit:
 
@@ -244,19 +291,20 @@ The image filter must wrap only the photo pixels, not crop scrims/selection UI.
 
 - zero/identity recipe in Reference mode should bypass the image filter entirely so an offscreen shader pass cannot silently alter untouched pixels;
 - screen-space shader filters are not sufficient for scale-independent Structure, Tonal Contrast or true local Ambiance unless source-space sampling/multipass behavior is explicitly designed;
-- pointwise math must not blindly assume the incoming texture is sRGB after we remove the current forced-sRGB bridge.
+- pointwise math must use the agreed transport/working-space contract rather than assuming arbitrary source coordinates are sRGB.
 
 ---
 
 # Priority fixes resulting from this audit
 
-1. Replace the forced ARGB8888+sRGB region decode policy with a source/capability-aware fidelity policy.
-2. Replace the forced sRGB/ARGB8888 native raw bridge with a transport that preserves color space and precision.
-3. Define how color-space metadata travels alongside raw pixels so Flutter/editor math knows what the values mean.
-4. Build strict 1:1 Pixel Inspector mode on top of the existing correct physical-scale baseline.
-5. Add seam/gutter tests and fix tile boundary reconstruction where required.
-6. Validate and redesign Ultra HDR display/reconstruction based on measured behavior and Android native capabilities.
-7. Only then make pointwise editor controls visible through the live shader path.
+1. **In progress:** preserve high precision in the native raw bridge — first patch landed; CI/device validation pending.
+2. Replace the forced ARGB8888+sRGB region decode policy with a source/capability-aware fidelity policy.
+3. Validate extended-sRGB float transport through Flutter/Impeller and the Android output surface.
+4. Trace/activate appropriate Android wide-color/HDR window/surface modes.
+5. Build strict 1:1 Pixel Inspector mode on top of the existing correct physical-scale baseline.
+6. Add seam/gutter tests and fix tile boundary reconstruction where required.
+7. Validate and redesign Ultra HDR display/reconstruction based on measured behavior and Android native capabilities.
+8. Only then make pointwise editor controls visible through the live shader path.
 
 ---
 

@@ -6,8 +6,9 @@ Documentation is a P0 part of this fork. Start here before substantial work.
 
 1. [`PROJECT_STATE.md`](PROJECT_STATE.md) — current branch, implemented work, next work, known uncertainties.
 2. [`CONTINUITY_PROTOCOL.md`](CONTINUITY_PROTOCOL.md) — rules for documenting every material decision/change/test/failure/chat requirement.
-3. [`chat/`](chat/) — chronological project conversation records.
-4. [`MAXIMUM_FIDELITY_VIEWER.md`](MAXIMUM_FIDELITY_VIEWER.md) — non-negotiable reference-viewer fidelity requirements.
+3. [`ROADMAP.md`](ROADMAP.md) — ordered product and engineering roadmap for the maximum-fidelity viewer/editor.
+4. [`chat/`](chat/) — chronological project conversation records.
+5. [`MAXIMUM_FIDELITY_VIEWER.md`](MAXIMUM_FIDELITY_VIEWER.md) — non-negotiable reference-viewer fidelity requirements.
 
 ## Documentation rule
 
@@ -19,6 +20,7 @@ When code changes materially affect behavior, quality, architecture, compatibili
 
 - maximum-fidelity hardware-limited image viewing;
 - non-destructive high-precision editing;
+- scientific image inspection, comparison and validation;
 - explicit Reference vs enhancement/edit rendering separation;
 - wide gamut and HDR/Ultra HDR as first-class paths;
 - robust Android export/save behavior influenced by ImageToolbox architecture;
